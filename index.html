@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Retro Cam</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="app">
+    <!-- Camera screen -->
+    <section id="camera-screen">
+      <div id="viewfinder">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="preview"></canvas>
+        <div id="flash"></div>
+        <div id="filter-name-toast"></div>
+      </div>
+
+      <div id="camera-error" hidden>
+        <p id="camera-error-msg">Camera unavailable.</p>
+        <button id="retry-camera" type="button">Try again</button>
+      </div>
+
+      <div id="controls">
+        <div id="filter-strip" role="listbox" aria-label="Filters"></div>
+        <div id="buttons-row">
+          <button id="last-photo" type="button" aria-label="Last photo">
+            <img id="last-photo-img" alt="" hidden />
+          </button>
+          <button id="shutter" type="button" aria-label="Take photo"></button>
+          <button id="flip" type="button" aria-label="Switch camera">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+              <path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" />
+              <polyline points="16 3 13 5 16 7" />
+              <polyline points="8 21 11 19 8 17" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Review screen (after capture) -->
+    <section id="review-screen" hidden>
+      <img id="review-img" alt="Captured photo" />
+      <div id="review-bar">
+        <button id="discard" type="button">Discard</button>
+        <button id="save" type="button">Save</button>
+        <button id="share" type="button">Share</button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
