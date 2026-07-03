@@ -21,8 +21,16 @@ like a real app.
 ## Camera controls
 
 - **Shutter** — takes the photo and **saves it automatically** (a "Saved ✓"
-  toast confirms). Tap the thumbnail (bottom-left) to review, re-save or
-  share the last shot.
+  toast confirms).
+- **Video mode** — tap **VIDEO** under the filter strip; the shutter turns
+  red and records filtered video (with sound). Filters can even be switched
+  mid-recording. Tap again to stop; the clip saves automatically.
+- **Flash** — the ⚡ button (top-left) toggles flash. The rear camera uses
+  the real torch when the phone has one; the front camera lights your face
+  with a white screen. In video mode the torch stays on while recording.
+- **Gallery** — tap the thumbnail (bottom-left) to browse **everything shot
+  with the app**; swipe left/right between photos and videos, and use
+  Save / Share / Delete on any of them.
 - **Tap to focus** — tap anywhere on the viewfinder; a yellow ring marks the
   spot and the camera focuses/meters there (on phones whose camera supports
   it — otherwise focus stays automatic).

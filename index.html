@@ -23,6 +23,8 @@
         <div id="flash"></div>
         <div id="focus-ring"></div>
         <div id="filter-name-toast"></div>
+        <button id="flash-toggle" type="button" class="off" aria-label="Flash">⚡</button>
+        <div id="record-timer" hidden><span class="rec-dot"></span><span id="record-time">0:00</span></div>
         <div id="exposure-control">
           <span class="exposure-icon">☀</span>
           <div id="exposure-wrap">
@@ -39,8 +41,12 @@
 
       <div id="controls">
         <div id="filter-strip" role="listbox" aria-label="Filters"></div>
+        <div id="mode-switch">
+          <button type="button" data-mode="photo" class="active">PHOTO</button>
+          <button type="button" data-mode="video">VIDEO</button>
+        </div>
         <div id="buttons-row">
-          <button id="last-photo" type="button" aria-label="Last photo">
+          <button id="last-photo" type="button" aria-label="Gallery">
             <img id="last-photo-img" alt="" hidden />
           </button>
           <button id="shutter" type="button" aria-label="Take photo"></button>
@@ -56,11 +62,15 @@
       </div>
     </section>
 
-    <!-- Review screen (after capture) -->
+    <!-- Gallery screen (all shots taken with the app) -->
     <section id="review-screen" hidden>
-      <img id="review-img" alt="Captured photo" />
+      <div id="gallery-header">
+        <span id="gallery-counter"></span>
+      </div>
+      <div id="gallery-track"></div>
       <div id="review-bar">
-        <button id="discard" type="button">Close</button>
+        <button id="close-review" type="button">Close</button>
+        <button id="delete-shot" type="button">Delete</button>
         <button id="save" type="button">Save</button>
         <button id="share" type="button">Share</button>
       </div>

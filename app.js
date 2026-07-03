@@ -1,10 +1,12 @@
-// app.js — camera, live filtered preview, capture, save/share.
+// app.js — camera, live filtered preview, photo + video capture, flash,
+// tap-to-focus, exposure, and a gallery of everything shot with the app.
 // Filters themselves live in filters.js; this file never needs to change
 // when a new filter is added.
 
 import { getFilters, getFilter } from './filters.js';
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
+const RECORD_MAX_SIDE = 960; // canvas size while recording video
 const CAPTURE_MAX_SIDE = 2048;
 
 const video = document.getElementById('video');
@@ -16,23 +18,37 @@ const toast = document.getElementById('filter-name-toast');
 const errorBox = document.getElementById('camera-error');
 const errorMsg = document.getElementById('camera-error-msg');
 const filterStrip = document.getElementById('filter-strip');
+const modeSwitch = document.getElementById('mode-switch');
 const shutterBtn = document.getElementById('shutter');
 const flipBtn = document.getElementById('flip');
+const flashToggle = document.getElementById('flash-toggle');
+const recordTimer = document.getElementById('record-timer');
+const recordTime = document.getElementById('record-time');
 const lastPhotoBtn = document.getElementById('last-photo');
 const lastPhotoImg = document.getElementById('last-photo-img');
 const reviewScreen = document.getElementById('review-screen');
-const reviewImg = document.getElementById('review-img');
+const galleryTrack = document.getElementById('gallery-track');
+const galleryCounter = document.getElementById('gallery-counter');
 const focusRing = document.getElementById('focus-ring');
 const exposureSlider = document.getElementById('exposure');
 
 let stream = null;
 let facing = 'environment';
 let activeFilterId = localStorage.getItem('retrocam-filter') || 'fifties-cam';
+let mode = 'photo'; // 'photo' | 'video'
+let flashOn = false;
 let rafId = 0;
 let toastTimer = 0;
-let capturedBlob = null;
-let capturedUrl = null;
 let exposureEV = 0; // in stops; applied as brightness gain so it always works
+
+let recorder = null;
+let recordChunks = [];
+let recordStartedAt = 0;
+let recordTickInt = 0;
+let audioStream = null;
+
+let galleryItems = [];
+let galleryUrls = [];
 
 function exposureGain() {
   return Math.pow(2, exposureEV);
@@ -44,6 +60,8 @@ function showToast(text) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toast.classList.remove('show'), 1200);
 }
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ---------------- filter chips ---------------- */
 
@@ -121,7 +139,8 @@ function renderLoop() {
 
   const vw = video.videoWidth;
   const vh = video.videoHeight;
-  const scale = Math.min(1, PREVIEW_MAX_SIDE / Math.max(vw, vh));
+  const maxSide = recorder ? RECORD_MAX_SIDE : PREVIEW_MAX_SIDE;
+  const scale = Math.min(1, maxSide / Math.max(vw, vh));
   const w = Math.round(vw * scale);
   const h = Math.round(vh * scale);
   if (preview.width !== w || preview.height !== h) {
@@ -140,10 +159,48 @@ function renderLoop() {
   }
 }
 
-/* ---------------- capture ---------------- */
+/* ---------------- flash ---------------- */
 
-function capture() {
+async function setTorch(on) {
+  const track = stream && stream.getVideoTracks()[0];
+  if (!track || !track.getCapabilities) return false;
+  try {
+    if (track.getCapabilities().torch) {
+      await track.applyConstraints({ advanced: [{ torch: on }] });
+      return true;
+    }
+  } catch {
+    /* torch not available */
+  }
+  return false;
+}
+
+function screenFlash(on) {
+  flash.classList.toggle('screen', on);
+}
+
+flashToggle.addEventListener('click', () => {
+  flashOn = !flashOn;
+  flashToggle.classList.toggle('off', !flashOn);
+  showToast(flashOn ? 'Flash on' : 'Flash off');
+  // if toggled off mid-recording, kill the torch
+  if (!flashOn && recorder) setTorch(false);
+  if (flashOn && recorder) setTorch(true);
+});
+
+/* ---------------- photo capture ---------------- */
+
+async function takePhoto() {
   if (!video.videoWidth) return;
+
+  let torchUsed = false;
+  if (flashOn) {
+    // rear camera: real torch when the hardware has one; front camera (or no
+    // torch): light the face up with a white screen instead
+    torchUsed = facing === 'environment' && (await setTorch(true));
+    if (!torchUsed) screenFlash(true);
+    await sleep(350); // give auto-exposure a beat to adapt to the light
+  }
 
   flash.classList.add('on');
   setTimeout(() => flash.classList.remove('on'), 60);
@@ -168,6 +225,9 @@ function capture() {
   ctx.filter = 'none';
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
+  if (torchUsed) setTorch(false);
+  screenFlash(false);
+
   const filter = getFilter(activeFilterId);
   if (filter.id !== 'normal') {
     const frame = ctx.getImageData(0, 0, w, h);
@@ -175,25 +235,16 @@ function capture() {
     ctx.putImageData(frame, 0, 0);
   }
 
-  // Everything above and below runs synchronously inside the shutter tap.
-  // That matters: browsers only allow repeated downloads when each one is
-  // directly tied to a user gesture — an async gap here and only the first
-  // photo would ever save.
-  capturedBlob = dataUrlToBlob(canvas.toDataURL('image/jpeg', 0.92));
-  if (capturedUrl) URL.revokeObjectURL(capturedUrl);
-  // download via a fresh one-time blob: URL — data: URLs all start with the
-  // same bytes, which trips some browsers' "download file again?" duplicate
-  // check on every shot
-  capturedUrl = URL.createObjectURL(capturedBlob);
-  const a = document.createElement('a');
-  a.href = capturedUrl;
-  a.download = photoFilename();
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  // Download synchronously with the shutter gesture (no flash) or within its
+  // transient-activation window (flash). A fresh one-time blob: URL plus a
+  // millisecond-unique filename keeps browsers' duplicate-download and
+  // multiple-download heuristics from blocking or prompting.
+  const blob = dataUrlToBlob(canvas.toDataURL('image/jpeg', 0.92));
+  downloadBlob(blob, mediaFilename('jpg'));
 
-  reviewImg.src = capturedUrl;
-  rememberLastPhoto();
+  const thumb = makeThumb(canvas);
+  setThumbnail(thumb);
+  addShot(blob, 'photo', thumb);
   showToast('Saved ✓');
 }
 
@@ -204,46 +255,284 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: 'image/jpeg' });
 }
 
-function photoFilename() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  // millisecond suffix keeps burst shots from colliding on the same name,
-  // which would trigger the browser's duplicate-download prompt
-  return `retrocam-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${String(d.getMilliseconds()).padStart(3, '0')}.jpg`;
-}
-
-function savePhoto() {
-  if (!capturedBlob) return;
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = capturedUrl;
-  a.download = photoFilename();
+  a.href = url;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
-async function sharePhoto() {
-  if (!capturedBlob) return;
-  const file = new File([capturedBlob], photoFilename(), { type: 'image/jpeg' });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file] });
-      rememberLastPhoto();
-      return;
-    } catch {
-      return; // user cancelled the share sheet
-    }
-  }
-  savePhoto(); // no share support — fall back to download
+function mediaFilename(ext) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `retrocam-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${String(d.getMilliseconds()).padStart(3, '0')}.${ext}`;
 }
 
-function rememberLastPhoto() {
-  lastPhotoImg.src = capturedUrl;
+function makeThumb(source) {
+  const t = document.createElement('canvas');
+  const s = 128 / Math.max(source.width, source.height);
+  t.width = Math.max(1, Math.round(source.width * s));
+  t.height = Math.max(1, Math.round(source.height * s));
+  t.getContext('2d').drawImage(source, 0, 0, t.width, t.height);
+  return t.toDataURL('image/jpeg', 0.7);
+}
+
+function setThumbnail(thumbDataUrl) {
+  lastPhotoImg.src = thumbDataUrl;
   lastPhotoImg.hidden = false;
 }
 
-function closeReview() {
+/* ---------------- video recording ---------------- */
+
+async function toggleRecording() {
+  if (recorder) {
+    recorder.stop();
+    return;
+  }
+  if (!stream) return;
+
+  // ask for the mic once so recordings have sound; video-only if denied
+  if (!audioStream) {
+    try {
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      showToast('Recording without sound');
+    }
+  }
+
+  if (flashOn) await setTorch(true);
+
+  const canvasStream = preview.captureStream(30);
+  const tracks = [...canvasStream.getVideoTracks()];
+  if (audioStream) tracks.push(...audioStream.getAudioTracks());
+
+  const mime = ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(
+    (t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)
+  );
+  try {
+    recorder = new MediaRecorder(new MediaStream(tracks), mime ? { mimeType: mime } : {});
+  } catch {
+    showToast('Video not supported here');
+    setTorch(false);
+    return;
+  }
+  recordChunks = [];
+  recorder.ondataavailable = (e) => {
+    if (e.data && e.data.size) recordChunks.push(e.data);
+  };
+  recorder.onstop = onRecordingStop;
+  recorder.start(1000);
+
+  recordStartedAt = Date.now();
+  recordTimer.hidden = false;
+  recordTickInt = setInterval(() => {
+    const s = Math.floor((Date.now() - recordStartedAt) / 1000);
+    recordTime.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 250);
+  shutterBtn.classList.add('recording');
+  flipBtn.disabled = true;
+}
+
+function onRecordingStop() {
+  const mimeType = (recorder && recorder.mimeType) || 'video/webm';
+  const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+  recorder = null;
+  clearInterval(recordTickInt);
+  recordTimer.hidden = true;
+  recordTime.textContent = '0:00';
+  shutterBtn.classList.remove('recording');
+  flipBtn.disabled = false;
+  setTorch(false);
+
+  const blob = new Blob(recordChunks, { type: mimeType });
+  recordChunks = [];
+  if (!blob.size) return;
+
+  downloadBlob(blob, mediaFilename(ext));
+  const thumb = makeThumb(preview);
+  setThumbnail(thumb);
+  addShot(blob, 'video', thumb);
+  showToast('Saved ✓');
+}
+
+/* ---------------- mode switch ---------------- */
+
+modeSwitch.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-mode]');
+  if (!btn || recorder) return;
+  mode = btn.dataset.mode;
+  for (const b of modeSwitch.children) b.classList.toggle('active', b === btn);
+  shutterBtn.classList.toggle('video', mode === 'video');
+  shutterBtn.setAttribute('aria-label', mode === 'video' ? 'Record video' : 'Take photo');
+});
+
+/* ---------------- gallery (IndexedDB) ---------------- */
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('retrocam-db', 1);
+    req.onupgradeneeded = () =>
+      req.result.createObjectStore('shots', { keyPath: 'id', autoIncrement: true });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function addShot(blob, type, thumb) {
+  try {
+    const db = await openDb();
+    db.transaction('shots', 'readwrite').objectStore('shots').add({ blob, type, thumb, ts: Date.now() });
+  } catch {
+    /* gallery is best-effort; the download already saved the file */
+  }
+}
+
+async function getShots() {
+  try {
+    const db = await openDb();
+    return await new Promise((resolve) => {
+      const req = db.transaction('shots').objectStore('shots').getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function deleteShotById(id) {
+  try {
+    const db = await openDb();
+    db.transaction('shots', 'readwrite').objectStore('shots').delete(id);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function openGallery() {
+  galleryItems = await getShots();
+  if (!galleryItems.length) {
+    showToast('No photos yet');
+    return;
+  }
+  closeGalleryUrls();
+  galleryTrack.innerHTML = '';
+  for (const item of galleryItems) {
+    const url = URL.createObjectURL(item.blob);
+    galleryUrls.push(url);
+    const slide = document.createElement('div');
+    slide.className = 'slide';
+    if (item.type === 'video') {
+      const v = document.createElement('video');
+      v.src = url;
+      v.controls = true;
+      v.playsInline = true;
+      v.preload = 'metadata';
+      slide.appendChild(v);
+    } else {
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = 'Photo';
+      slide.appendChild(img);
+    }
+    galleryTrack.appendChild(slide);
+  }
+  reviewScreen.hidden = false;
+  // open on the most recent shot
+  requestAnimationFrame(() => {
+    galleryTrack.scrollLeft = galleryTrack.scrollWidth;
+    updateGalleryCounter();
+  });
+}
+
+function galleryIndex() {
+  if (!galleryTrack.clientWidth) return 0;
+  return Math.min(
+    galleryItems.length - 1,
+    Math.max(0, Math.round(galleryTrack.scrollLeft / galleryTrack.clientWidth))
+  );
+}
+
+function updateGalleryCounter() {
+  galleryCounter.textContent = galleryItems.length
+    ? `${galleryIndex() + 1} / ${galleryItems.length}`
+    : '';
+  // pause videos that were swiped away
+  const idx = galleryIndex();
+  galleryTrack.querySelectorAll('video').forEach((v) => {
+    const slideIdx = [...galleryTrack.children].indexOf(v.parentElement);
+    if (slideIdx !== idx) v.pause();
+  });
+}
+
+let galleryScrollRaf = 0;
+galleryTrack.addEventListener('scroll', () => {
+  cancelAnimationFrame(galleryScrollRaf);
+  galleryScrollRaf = requestAnimationFrame(updateGalleryCounter);
+});
+
+function closeGalleryUrls() {
+  for (const url of galleryUrls) URL.revokeObjectURL(url);
+  galleryUrls = [];
+}
+
+function closeGallery() {
+  galleryTrack.querySelectorAll('video').forEach((v) => v.pause());
   reviewScreen.hidden = true;
+  closeGalleryUrls();
+  galleryTrack.innerHTML = '';
+  galleryItems = [];
+}
+
+function currentGalleryItem() {
+  return galleryItems[galleryIndex()] || null;
+}
+
+function saveCurrent() {
+  const item = currentGalleryItem();
+  if (!item) return;
+  const ext = item.type === 'video' ? (item.blob.type.includes('mp4') ? 'mp4' : 'webm') : 'jpg';
+  downloadBlob(item.blob, mediaFilename(ext));
+  showToast('Saved ✓');
+}
+
+async function shareCurrent() {
+  const item = currentGalleryItem();
+  if (!item) return;
+  const ext = item.type === 'video' ? (item.blob.type.includes('mp4') ? 'mp4' : 'webm') : 'jpg';
+  const file = new File([item.blob], mediaFilename(ext), { type: item.blob.type || 'image/jpeg' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+    } catch {
+      /* user closed the share sheet */
+    }
+    return;
+  }
+  saveCurrent(); // no share support — fall back to download
+}
+
+async function deleteCurrent() {
+  const idx = galleryIndex();
+  const item = galleryItems[idx];
+  if (!item) return;
+  await deleteShotById(item.id);
+  galleryItems.splice(idx, 1);
+  const slide = galleryTrack.children[idx];
+  if (slide) slide.remove();
+  if (!galleryItems.length) {
+    closeGallery();
+    lastPhotoImg.hidden = true;
+    lastPhotoImg.removeAttribute('src');
+    return;
+  }
+  updateGalleryCounter();
+  const last = galleryItems[galleryItems.length - 1];
+  if (last && last.thumb) setThumbnail(last.thumb);
 }
 
 /* ---------------- tap to focus ---------------- */
@@ -288,8 +577,8 @@ function tapToFocus(e) {
 }
 
 viewfinder.addEventListener('pointerdown', (e) => {
-  // ignore taps on the exposure slider
-  if (e.target.closest('#exposure-control')) return;
+  // ignore taps on the overlay controls
+  if (e.target.closest('#exposure-control') || e.target.closest('#flash-toggle')) return;
   tapToFocus(e);
 });
 
@@ -311,22 +600,35 @@ exposureSlider.addEventListener('dblclick', () => {
 
 buildFilterStrip();
 
-shutterBtn.addEventListener('click', capture);
+shutterBtn.addEventListener('click', () => {
+  if (mode === 'video') toggleRecording();
+  else takePhoto();
+});
 flipBtn.addEventListener('click', () => {
+  if (recorder) return;
   facing = facing === 'environment' ? 'user' : 'environment';
   startCamera();
 });
 document.getElementById('retry-camera').addEventListener('click', startCamera);
-document.getElementById('discard').addEventListener('click', closeReview);
-document.getElementById('save').addEventListener('click', savePhoto);
-document.getElementById('share').addEventListener('click', sharePhoto);
-lastPhotoBtn.addEventListener('click', () => {
-  if (!lastPhotoImg.hidden) reviewScreen.hidden = false;
-});
+document.getElementById('close-review').addEventListener('click', closeGallery);
+document.getElementById('save').addEventListener('click', saveCurrent);
+document.getElementById('share').addEventListener('click', shareCurrent);
+document.getElementById('delete-shot').addEventListener('click', deleteCurrent);
+lastPhotoBtn.addEventListener('click', openGallery);
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopCamera();
-  else startCamera();
+  if (document.hidden) {
+    if (recorder) recorder.stop();
+    stopCamera();
+  } else {
+    startCamera();
+  }
+});
+
+// restore the gallery thumbnail from the last session
+getShots().then((shots) => {
+  const last = shots[shots.length - 1];
+  if (last && last.thumb && lastPhotoImg.hidden) setThumbnail(last.thumb);
 });
 
 if ('serviceWorker' in navigator) {
