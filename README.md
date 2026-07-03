@@ -18,17 +18,31 @@ like a real app.
 | **Polaroid '89** | Washed-out instant-photo look |
 | **VHS '95** | Camcorder tape — fringing, scanlines, noise |
 
-## Get it on your phone (one-time setup)
+## Camera controls
 
-1. On GitHub, go to **Settings → Pages**.
-2. Under **Source**, choose **Deploy from a branch**.
-3. Pick the branch this code is on (e.g. `main` or `claude/camera-app-filters-pzlkib`), folder **/(root)**, and save.
-4. After ~1 minute the app is live at **https://skigoogs-star.github.io/TESTES/**
-5. Open that URL on your phone and allow camera access.
-6. In the browser menu, tap **Add to Home Screen** — done. It now opens fullscreen like a native app.
+- **Shutter** — takes the photo and **saves it automatically** (a "Saved ✓"
+  toast confirms). Tap the thumbnail (bottom-left) to review, re-save or
+  share the last shot.
+- **Tap to focus** — tap anywhere on the viewfinder; a yellow ring marks the
+  spot and the camera focuses/meters there (on phones whose camera supports
+  it — otherwise focus stays automatic).
+- **Exposure** — drag the ☀ slider on the right edge up/down to brighten or
+  darken (±2 stops). Double-tap the slider to reset.
+- **Flip** — switches between rear and front camera.
 
-Photos are saved through your phone's share sheet (**Share** → Save to Photos)
-or downloaded directly with **Save**.
+## Get it on your phone
+
+A GitHub Actions workflow (`.github/workflows/pages.yml`) deploys the app to
+GitHub Pages automatically on every push. Once it has run, the app is live at
+**https://skigoogs-star.github.io/TESTES/**
+
+1. Open that URL on your phone and allow camera access.
+2. In the browser menu, tap **Add to Home Screen** — done. It now opens
+   fullscreen like a native app.
+
+If the URL shows a 404, check the **Actions** tab for the "Deploy to GitHub
+Pages" run. If the run failed to enable Pages, do it once by hand: repo
+**Settings → Pages → Source: GitHub Actions**, then re-run the workflow.
 
 ## Adding a new filter
 

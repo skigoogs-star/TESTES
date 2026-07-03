@@ -60,6 +60,115 @@ body {
   transition: none;
 }
 
+#focus-ring {
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  margin: -36px 0 0 -36px;
+  border: 2px solid #ffd54a;
+  border-radius: 14px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#focus-ring.show {
+  animation: focus-pulse 0.9s ease-out;
+}
+
+@keyframes focus-pulse {
+  0% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+#exposure-control {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 2;
+  padding: 10px 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.exposure-icon {
+  font-size: 16px;
+  color: #ffd54a;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+}
+
+.exposure-icon.dim {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+#exposure-wrap {
+  position: relative;
+  width: 26px;
+  height: 150px;
+}
+
+#exposure {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 150px;
+  height: 26px;
+  background: transparent;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(270deg);
+  margin: 0;
+  touch-action: none;
+}
+
+#exposure::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+#exposure::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -9.5px;
+  border-radius: 50%;
+  background: #ffd54a;
+  border: 2px solid rgba(0, 0, 0, 0.35);
+}
+
+#exposure::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+#exposure::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffd54a;
+  border: 2px solid rgba(0, 0, 0, 0.35);
+}
+
 #filter-name-toast {
   position: absolute;
   top: max(18px, env(safe-area-inset-top));

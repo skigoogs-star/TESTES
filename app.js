@@ -8,6 +8,7 @@ const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const CAPTURE_MAX_SIDE = 2048;
 
 const video = document.getElementById('video');
+const viewfinder = document.getElementById('viewfinder');
 const preview = document.getElementById('preview');
 const previewCtx = preview.getContext('2d', { willReadFrequently: true });
 const flash = document.getElementById('flash');
@@ -21,6 +22,8 @@ const lastPhotoBtn = document.getElementById('last-photo');
 const lastPhotoImg = document.getElementById('last-photo-img');
 const reviewScreen = document.getElementById('review-screen');
 const reviewImg = document.getElementById('review-img');
+const focusRing = document.getElementById('focus-ring');
+const exposureSlider = document.getElementById('exposure');
 
 let stream = null;
 let facing = 'environment';
@@ -29,6 +32,18 @@ let rafId = 0;
 let toastTimer = 0;
 let capturedBlob = null;
 let capturedUrl = null;
+let exposureEV = 0; // in stops; applied as brightness gain so it always works
+
+function exposureGain() {
+  return Math.pow(2, exposureEV);
+}
+
+function showToast(text) {
+  toast.textContent = text;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 1200);
+}
 
 /* ---------------- filter chips ---------------- */
 
@@ -57,10 +72,7 @@ function selectFilter(id) {
   activeFilterId = id;
   localStorage.setItem('retrocam-filter', id);
   updateChips();
-  toast.textContent = getFilter(id).name;
-  toast.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), 1200);
+  showToast(getFilter(id).name);
 }
 
 /* ---------------- camera ---------------- */
@@ -117,7 +129,9 @@ function renderLoop() {
     preview.height = h;
   }
 
+  previewCtx.filter = exposureEV ? `brightness(${exposureGain()})` : 'none';
   previewCtx.drawImage(video, 0, 0, w, h);
+  previewCtx.filter = 'none';
   const filter = getFilter(activeFilterId);
   if (filter.id !== 'normal') {
     const frame = previewCtx.getImageData(0, 0, w, h);
@@ -149,7 +163,9 @@ async function capture() {
     ctx.translate(w, 0);
     ctx.scale(-1, 1);
   }
+  ctx.filter = exposureEV ? `brightness(${exposureGain()})` : 'none';
   ctx.drawImage(video, 0, 0, w, h);
+  ctx.filter = 'none';
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
   const filter = getFilter(activeFilterId);
@@ -164,7 +180,11 @@ async function capture() {
   if (capturedUrl) URL.revokeObjectURL(capturedUrl);
   capturedUrl = URL.createObjectURL(capturedBlob);
   reviewImg.src = capturedUrl;
-  reviewScreen.hidden = false;
+
+  // auto-save every shot; tap the thumbnail to review/share it
+  savePhoto();
+  rememberLastPhoto();
+  showToast('Saved ✓');
 }
 
 function photoFilename() {
@@ -181,7 +201,6 @@ function savePhoto() {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  rememberLastPhoto();
 }
 
 async function sharePhoto() {
@@ -207,6 +226,67 @@ function rememberLastPhoto() {
 function closeReview() {
   reviewScreen.hidden = true;
 }
+
+/* ---------------- tap to focus ---------------- */
+
+function tapToFocus(e) {
+  const rect = preview.getBoundingClientRect();
+  if (
+    e.clientX < rect.left ||
+    e.clientX > rect.right ||
+    e.clientY < rect.top ||
+    e.clientY > rect.bottom
+  ) {
+    return;
+  }
+
+  // focus ring animation at the tap point
+  const vfRect = viewfinder.getBoundingClientRect();
+  focusRing.style.left = `${e.clientX - vfRect.left}px`;
+  focusRing.style.top = `${e.clientY - vfRect.top}px`;
+  focusRing.classList.remove('show');
+  void focusRing.offsetWidth; // restart the animation
+  focusRing.classList.add('show');
+
+  // ask the camera to focus/meter on that point (where hardware supports it)
+  const track = stream && stream.getVideoTracks()[0];
+  if (!track || !track.getCapabilities) return;
+  let x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+  if (facing === 'user') x = 1 - x; // preview is mirrored
+  try {
+    const caps = track.getCapabilities();
+    const adv = {};
+    if (Array.isArray(caps.focusMode)) {
+      if (caps.focusMode.includes('single-shot')) adv.focusMode = 'single-shot';
+      else if (caps.focusMode.includes('continuous')) adv.focusMode = 'continuous';
+    }
+    if ('pointsOfInterest' in caps) adv.pointsOfInterest = [{ x, y }];
+    if (Object.keys(adv).length) track.applyConstraints({ advanced: [adv] }).catch(() => {});
+  } catch {
+    /* focus not supported on this device — the ring still gives feedback */
+  }
+}
+
+viewfinder.addEventListener('pointerdown', (e) => {
+  // ignore taps on the exposure slider
+  if (e.target.closest('#exposure-control')) return;
+  tapToFocus(e);
+});
+
+/* ---------------- exposure ---------------- */
+
+exposureSlider.addEventListener('input', () => {
+  exposureEV = parseFloat(exposureSlider.value) || 0;
+  const label = exposureEV > 0 ? `+${exposureEV.toFixed(1)}` : exposureEV.toFixed(1);
+  showToast(`Exposure ${label}`);
+});
+
+exposureSlider.addEventListener('dblclick', () => {
+  exposureSlider.value = '0';
+  exposureEV = 0;
+  showToast('Exposure 0.0');
+});
 
 /* ---------------- wiring ---------------- */
 

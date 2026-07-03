@@ -21,7 +21,15 @@
         <video id="video" autoplay playsinline muted></video>
         <canvas id="preview"></canvas>
         <div id="flash"></div>
+        <div id="focus-ring"></div>
         <div id="filter-name-toast"></div>
+        <div id="exposure-control">
+          <span class="exposure-icon">☀</span>
+          <div id="exposure-wrap">
+            <input id="exposure" type="range" min="-2" max="2" step="0.1" value="0" aria-label="Exposure" />
+          </div>
+          <span class="exposure-icon dim">☀</span>
+        </div>
       </div>
 
       <div id="camera-error" hidden>
@@ -52,7 +60,7 @@
     <section id="review-screen" hidden>
       <img id="review-img" alt="Captured photo" />
       <div id="review-bar">
-        <button id="discard" type="button">Discard</button>
+        <button id="discard" type="button">Close</button>
         <button id="save" type="button">Save</button>
         <button id="share" type="button">Share</button>
       </div>
