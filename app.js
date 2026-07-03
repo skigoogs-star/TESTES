@@ -179,18 +179,19 @@ function capture() {
   // That matters: browsers only allow repeated downloads when each one is
   // directly tied to a user gesture — an async gap here and only the first
   // photo would ever save.
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  capturedBlob = dataUrlToBlob(canvas.toDataURL('image/jpeg', 0.92));
+  if (capturedUrl) URL.revokeObjectURL(capturedUrl);
+  // download via a fresh one-time blob: URL — data: URLs all start with the
+  // same bytes, which trips some browsers' "download file again?" duplicate
+  // check on every shot
+  capturedUrl = URL.createObjectURL(capturedBlob);
   const a = document.createElement('a');
-  a.href = dataUrl;
+  a.href = capturedUrl;
   a.download = photoFilename();
   document.body.appendChild(a);
   a.click();
   a.remove();
 
-  // keep a blob around for the review screen's Share/Save buttons
-  capturedBlob = dataUrlToBlob(dataUrl);
-  if (capturedUrl) URL.revokeObjectURL(capturedUrl);
-  capturedUrl = URL.createObjectURL(capturedBlob);
   reviewImg.src = capturedUrl;
   rememberLastPhoto();
   showToast('Saved ✓');
@@ -206,7 +207,9 @@ function dataUrlToBlob(dataUrl) {
 function photoFilename() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
-  return `retrocam-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.jpg`;
+  // millisecond suffix keeps burst shots from colliding on the same name,
+  // which would trigger the browser's duplicate-download prompt
+  return `retrocam-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${String(d.getMilliseconds()).padStart(3, '0')}.jpg`;
 }
 
 function savePhoto() {

@@ -1,6 +1,6 @@
 // Minimal service worker: precache the app shell so Retro Cam installs as a
 // PWA and opens offline. Bump VERSION when files change.
-const VERSION = 'retrocam-v3';
+const VERSION = 'retrocam-v4';
 const ASSETS = [
   './',
   './index.html',
