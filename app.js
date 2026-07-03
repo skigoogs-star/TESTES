@@ -39,7 +39,7 @@ let mode = 'photo'; // 'photo' | 'video'
 let flashOn = false;
 let rafId = 0;
 let toastTimer = 0;
-let exposureEV = 0; // in stops; applied as brightness gain so it always works
+let brightness = 0; // -3..+3; mapped to a gentle gain so it always works
 
 let recorder = null;
 let recordChunks = [];
@@ -50,8 +50,10 @@ let audioStream = null;
 let galleryItems = [];
 let galleryUrls = [];
 
-function exposureGain() {
-  return Math.pow(2, exposureEV);
+function brightnessGain() {
+  // 1.5 slider units per stop: the ±3 range spans ±2 stops, so each nudge
+  // changes the image a third less than the old ±2-stop slider did
+  return Math.pow(2, brightness / 1.5);
 }
 
 function showToast(text) {
@@ -148,7 +150,7 @@ function renderLoop() {
     preview.height = h;
   }
 
-  previewCtx.filter = exposureEV ? `brightness(${exposureGain()})` : 'none';
+  previewCtx.filter = brightness ? `brightness(${brightnessGain()})` : 'none';
   previewCtx.drawImage(video, 0, 0, w, h);
   previewCtx.filter = 'none';
   const filter = getFilter(activeFilterId);
@@ -220,7 +222,7 @@ async function takePhoto() {
     ctx.translate(w, 0);
     ctx.scale(-1, 1);
   }
-  ctx.filter = exposureEV ? `brightness(${exposureGain()})` : 'none';
+  ctx.filter = brightness ? `brightness(${brightnessGain()})` : 'none';
   ctx.drawImage(video, 0, 0, w, h);
   ctx.filter = 'none';
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -582,19 +584,29 @@ viewfinder.addEventListener('pointerdown', (e) => {
   tapToFocus(e);
 });
 
-/* ---------------- exposure ---------------- */
+/* ---------------- brightness ---------------- */
 
 exposureSlider.addEventListener('input', () => {
-  exposureEV = parseFloat(exposureSlider.value) || 0;
-  const label = exposureEV > 0 ? `+${exposureEV.toFixed(1)}` : exposureEV.toFixed(1);
-  showToast(`Exposure ${label}`);
+  brightness = parseFloat(exposureSlider.value) || 0;
+  const label = brightness > 0 ? `+${brightness.toFixed(1)}` : brightness.toFixed(1);
+  showToast(`Brightness ${label}`);
 });
 
-exposureSlider.addEventListener('dblclick', () => {
+function resetBrightness() {
   exposureSlider.value = '0';
-  exposureEV = 0;
-  showToast('Exposure 0.0');
+  brightness = 0;
+  showToast('Brightness 0.0');
+}
+
+// double-tap the slider to snap back to center — pointer-based so it works
+// on touchscreens, plus dblclick for mouse
+let lastBrightnessTap = 0;
+document.getElementById('exposure-wrap').addEventListener('pointerdown', () => {
+  const now = Date.now();
+  if (now - lastBrightnessTap < 350) resetBrightness();
+  lastBrightnessTap = now;
 });
+exposureSlider.addEventListener('dblclick', resetBrightness);
 
 /* ---------------- wiring ---------------- */
 

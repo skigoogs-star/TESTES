@@ -34,8 +34,8 @@ like a real app.
 - **Tap to focus** — tap anywhere on the viewfinder; a yellow ring marks the
   spot and the camera focuses/meters there (on phones whose camera supports
   it — otherwise focus stays automatic).
-- **Exposure** — drag the ☀ slider on the right edge up/down to brighten or
-  darken (±2 stops). Double-tap the slider to reset.
+- **Brightness** — drag the ☀ slider on the right edge up/down to brighten
+  or darken (−3 to +3). Double-tap the slider to snap back to 0.
 - **Flip** — switches between rear and front camera.
 
 ## Get it on your phone
