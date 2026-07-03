@@ -290,6 +290,30 @@ function setThumbnail(thumbDataUrl) {
 
 /* ---------------- video recording ---------------- */
 
+function releaseMic() {
+  if (audioStream) {
+    for (const t of audioStream.getTracks()) t.stop();
+    audioStream = null;
+  }
+}
+
+function pickRecordingMime(withAudio) {
+  if (!window.MediaRecorder) return '';
+  // only formats whose AUDIO codec is explicitly supported — a phone can
+  // accept bare "video/mp4" and then silently drop the audio track
+  const candidates = withAudio
+    ? [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/mp4',
+        'video/webm',
+      ]
+    : ['video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+  return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+}
+
 async function toggleRecording() {
   if (recorder) {
     recorder.stop();
@@ -297,29 +321,39 @@ async function toggleRecording() {
   }
   if (!stream) return;
 
-  // ask for the mic once so recordings have sound; video-only if denied
-  if (!audioStream) {
-    try {
-      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      showToast('Recording without sound');
-    }
+  // grab the mic for this recording — like a normal camera app, video
+  // records with sound whenever the mic is available
+  releaseMic();
+  try {
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (err) {
+    audioStream = null;
+    showToast(
+      err && err.name === 'NotAllowedError'
+        ? 'No sound — allow microphone in site settings'
+        : 'Recording without sound'
+    );
   }
 
   if (flashOn) await setTorch(true);
 
   const canvasStream = preview.captureStream(30);
   const tracks = [...canvasStream.getVideoTracks()];
-  if (audioStream) tracks.push(...audioStream.getAudioTracks());
+  const hasAudio = !!(audioStream && audioStream.getAudioTracks().length);
+  if (hasAudio) tracks.push(...audioStream.getAudioTracks());
 
-  const mime = ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(
-    (t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)
-  );
+  const mime = pickRecordingMime(hasAudio);
   try {
-    recorder = new MediaRecorder(new MediaStream(tracks), mime ? { mimeType: mime } : {});
+    recorder = new MediaRecorder(
+      new MediaStream(tracks),
+      mime ? { mimeType: mime, audioBitsPerSecond: 128000 } : {}
+    );
   } catch {
     showToast('Video not supported here');
     setTorch(false);
+    releaseMic();
     return;
   }
   recordChunks = [];
@@ -349,6 +383,7 @@ function onRecordingStop() {
   shutterBtn.classList.remove('recording');
   flipBtn.disabled = false;
   setTorch(false);
+  releaseMic(); // free the mic between recordings, like a normal camera app
 
   const blob = new Blob(recordChunks, { type: mimeType });
   recordChunks = [];
