@@ -142,7 +142,7 @@ function renderLoop() {
 
 /* ---------------- capture ---------------- */
 
-async function capture() {
+function capture() {
   if (!video.videoWidth) return;
 
   flash.classList.add('on');
@@ -175,16 +175,32 @@ async function capture() {
     ctx.putImageData(frame, 0, 0);
   }
 
-  capturedBlob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.92));
-  if (!capturedBlob) return;
+  // Everything above and below runs synchronously inside the shutter tap.
+  // That matters: browsers only allow repeated downloads when each one is
+  // directly tied to a user gesture — an async gap here and only the first
+  // photo would ever save.
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = photoFilename();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  // keep a blob around for the review screen's Share/Save buttons
+  capturedBlob = dataUrlToBlob(dataUrl);
   if (capturedUrl) URL.revokeObjectURL(capturedUrl);
   capturedUrl = URL.createObjectURL(capturedBlob);
   reviewImg.src = capturedUrl;
-
-  // auto-save every shot; tap the thumbnail to review/share it
-  savePhoto();
   rememberLastPhoto();
   showToast('Saved ✓');
+}
+
+function dataUrlToBlob(dataUrl) {
+  const bin = atob(dataUrl.split(',')[1]);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: 'image/jpeg' });
 }
 
 function photoFilename() {
