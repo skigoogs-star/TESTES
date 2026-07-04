@@ -6,7 +6,7 @@
 import { getFilters, getFilter } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v10'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v11'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -170,29 +170,80 @@ function renderLoop() {
 
 async function setTorch(on) {
   const track = stream && stream.getVideoTracks()[0];
-  if (!track || !track.getCapabilities) return false;
+  if (!track) return false;
+  // path 1: capability advertised → best-effort apply
   try {
-    if (track.getCapabilities().torch) {
+    if (track.getCapabilities && track.getCapabilities().torch) {
       await track.applyConstraints({ advanced: [{ torch: on }] });
       return true;
     }
   } catch {
-    /* torch not available */
+    /* fall through */
   }
-  return false;
+  // path 2: some phones support torch without advertising it — a strict
+  // (non-advanced) constraint throws if unsupported, so success is real
+  try {
+    await track.applyConstraints({ torch: on });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// path 3: the real camera flash, hardware-synchronized with a full-res
+// still — what native camera apps fire. Returns a JPEG blob or null.
+async function captureWithHardwareFlash() {
+  try {
+    if (!('ImageCapture' in window)) return null;
+    const track = stream && stream.getVideoTracks()[0];
+    if (!track) return null;
+    const ic = new ImageCapture(track);
+    const caps = await ic.getPhotoCapabilities();
+    if (!caps || !Array.isArray(caps.fillLightMode) || !caps.fillLightMode.includes('flash')) {
+      return null;
+    }
+    return await ic.takePhoto({ fillLightMode: 'flash' });
+  } catch {
+    return null;
+  }
 }
 
 function screenFlash(on) {
   flash.classList.toggle('screen', on);
 }
 
-flashToggle.addEventListener('click', () => {
+flashToggle.addEventListener('click', async () => {
   flashOn = !flashOn;
   flashToggle.classList.toggle('off', !flashOn);
-  showToast(flashOn ? 'Flash on' : 'Flash off');
   // if toggled off mid-recording, kill the torch
   if (!flashOn && recorder) setTorch(false);
   if (flashOn && recorder) setTorch(true);
+  if (!flashOn) {
+    showToast('Flash off');
+    return;
+  }
+  // tell the user which flash this camera will actually fire
+  if (facing !== 'environment') {
+    showToast('Flash on (screen)');
+    return;
+  }
+  let kind = 'screen';
+  if (await setTorch(true)) {
+    kind = 'torch';
+    if (!recorder) setTorch(false); // probe only — light it for real at capture
+  } else {
+    try {
+      if ('ImageCapture' in window && stream) {
+        const caps = await new ImageCapture(stream.getVideoTracks()[0]).getPhotoCapabilities();
+        if (caps && Array.isArray(caps.fillLightMode) && caps.fillLightMode.includes('flash')) {
+          kind = 'camera flash';
+        }
+      }
+    } catch {
+      /* stay on screen */
+    }
+  }
+  showToast(`Flash on (${kind})`);
 });
 
 /* ---------------- photo capture ---------------- */
@@ -200,23 +251,34 @@ flashToggle.addEventListener('click', () => {
 async function takePhoto() {
   if (!video.videoWidth) return;
 
+  // flash, in order of quality: torch → hardware still-flash → white screen
   let torchUsed = false;
+  let flashBitmap = null;
   if (flashOn) {
-    // rear camera: real torch when the hardware has one; front camera (or no
-    // torch): light the face up with a white screen instead
-    torchUsed = facing === 'environment' && (await setTorch(true));
-    if (!torchUsed) screenFlash(true);
-    await sleep(350); // give auto-exposure a beat to adapt to the light
+    if (facing === 'environment') {
+      torchUsed = await setTorch(true);
+      if (!torchUsed) {
+        const hwBlob = await captureWithHardwareFlash();
+        if (hwBlob) {
+          flashBitmap = await createImageBitmap(hwBlob, { imageOrientation: 'from-image' }).catch(
+            () => null
+          );
+        }
+      }
+    }
+    if (!torchUsed && !flashBitmap) screenFlash(true);
+    if (!flashBitmap) await sleep(350); // let auto-exposure adapt to the light
   }
 
   flash.classList.add('on');
   setTimeout(() => flash.classList.remove('on'), 60);
 
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  const scale = Math.min(1, CAPTURE_MAX_SIDE / Math.max(vw, vh));
-  const w = Math.round(vw * scale);
-  const h = Math.round(vh * scale);
+  const source = flashBitmap || video;
+  const sw = flashBitmap ? flashBitmap.width : video.videoWidth;
+  const sh = flashBitmap ? flashBitmap.height : video.videoHeight;
+  const scale = Math.min(1, CAPTURE_MAX_SIDE / Math.max(sw, sh));
+  const w = Math.round(sw * scale);
+  const h = Math.round(sh * scale);
 
   const canvas = document.createElement('canvas');
   canvas.width = w;
@@ -228,9 +290,10 @@ async function takePhoto() {
     ctx.scale(-1, 1);
   }
   ctx.filter = brightness ? `brightness(${brightnessGain()})` : 'none';
-  ctx.drawImage(video, 0, 0, w, h);
+  ctx.drawImage(source, 0, 0, w, h);
   ctx.filter = 'none';
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (flashBitmap) flashBitmap.close();
 
   if (torchUsed) setTorch(false);
   screenFlash(false);
