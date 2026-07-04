@@ -4,18 +4,19 @@
 // gallery apps play the sound. app.js falls back to MediaRecorder when
 // WebCodecs (or an AAC encoder) isn't available.
 //
+// All encoding runs in a Web Worker (mp4-worker.js): the camera filters
+// block the main thread for tens of ms per frame, which would starve the
+// mic reader and produce chopped-up audio if anything ran here.
+//
 // Muxing by mp4-muxer (vendored, MIT — https://github.com/Vanilagy/mp4-muxer).
 
-import { Muxer, ArrayBufferTarget } from './mp4-muxer.mjs';
-
-// H.264 + AAC — what native camera apps produce, so gallery apps play it.
-// The __mp4TestCodecs hook swaps in VP9 + Opus so automated tests can
-// exercise this exact pipeline on machines whose Chromium ships without
-// H.264/AAC encoders; phones never set it.
+// H.264 + AAC by default. The __mp4TestCodecs hook swaps in VP9 + Opus so
+// automated tests can exercise this exact pipeline on machines whose
+// Chromium ships without H.264/AAC encoders; phones never set it.
 function videoCodec() {
   return window.__mp4TestCodecs
-    ? { webcodecs: 'vp09.00.10.08', muxer: 'vp9', extra: {} }
-    : { webcodecs: 'avc1.42E01F', muxer: 'avc', extra: { avc: { format: 'avc' } } };
+    ? { webcodecs: 'vp09.00.10.08', muxer: 'vp9', avcFormat: false }
+    : { webcodecs: 'avc1.42E01F', muxer: 'avc', avcFormat: true };
 }
 
 function audioCodec() {
@@ -26,7 +27,9 @@ function audioCodec() {
 
 export async function mp4RecorderSupported(withAudio) {
   try {
-    if (!window.VideoEncoder || !window.MediaStreamTrackProcessor) return false;
+    if (!window.VideoEncoder || !window.MediaStreamTrackProcessor || !window.Worker) {
+      return false;
+    }
     const v = await VideoEncoder.isConfigSupported({
       codec: videoCodec().webcodecs,
       width: 1280,
@@ -57,120 +60,91 @@ export class Mp4Recorder {
     this.height = height;
     this.audioTrack = audioTrack || null;
     this.stopped = false;
-    this.error = null;
-    this.lastKey = -Infinity;
     this.startTime = 0;
+    this.ac = null;
+    this.worker = null;
   }
 
-  start() {
-    const settings = this.audioTrack ? this.audioTrack.getSettings() : {};
-    const sampleRate = settings.sampleRate || 48000;
-    const channels = settings.channelCount || 1;
-    const vcodec = videoCodec();
-    const acodec = audioCodec();
-
-    this.muxer = new Muxer({
-      target: new ArrayBufferTarget(),
-      video: { codec: vcodec.muxer, width: this.width, height: this.height },
-      audio: this.audioTrack
-        ? { codec: acodec.muxer, sampleRate, numberOfChannels: channels }
-        : undefined,
-      fastStart: 'in-memory',
-      firstTimestampBehavior: 'offset', // mic and canvas clocks differ
-    });
-
-    this.videoEncoder = new VideoEncoder({
-      output: (chunk, meta) => this.muxer.addVideoChunk(chunk, meta),
-      error: (e) => {
-        this.error = e;
-      },
-    });
-    this.videoEncoder.configure({
-      codec: vcodec.webcodecs,
-      width: this.width,
-      height: this.height,
-      bitrate: Math.min(8_000_000, Math.max(2_500_000, this.width * this.height * 6)),
-      framerate: 30,
-      ...vcodec.extra,
-    });
-
+  async start() {
+    let audioReadable = null;
     if (this.audioTrack) {
-      this.audioEncoder = new AudioEncoder({
-        output: (chunk, meta) => this.muxer.addAudioChunk(chunk, meta),
-        error: () => {
-          this.audioEncoder = null; // keep the video even if audio dies
-        },
-      });
-      this.audioEncoder.configure({
-        codec: acodec.webcodecs,
-        sampleRate,
-        numberOfChannels: channels,
-        bitrate: 128000,
-      });
-      this.audioReader = new MediaStreamTrackProcessor({ track: this.audioTrack }).readable.getReader();
-      this.pumpAudio();
+      // normalize the mic to 48 kHz through an AudioContext: encoders
+      // (Chrome's opus especially) garble audio at oddball mic rates like
+      // 44.1 kHz, which plays back as noise
+      let track = this.audioTrack;
+      try {
+        this.ac = new AudioContext({ sampleRate: 48000 });
+        if (this.ac.state === 'suspended') await this.ac.resume();
+        const src = this.ac.createMediaStreamSource(new MediaStream([this.audioTrack]));
+        const dst = this.ac.createMediaStreamDestination();
+        src.connect(dst);
+        track = dst.stream.getAudioTracks()[0];
+      } catch {
+        track = this.audioTrack; // record from the raw track if the graph fails
+      }
+      audioReadable = new MediaStreamTrackProcessor({ track }).readable;
     }
 
+    this.worker = new Worker('./mp4-worker.js', { type: 'module' });
+    const vcodec = videoCodec();
+    const acodec = audioCodec();
+    this.worker.postMessage(
+      {
+        type: 'start',
+        width: this.width,
+        height: this.height,
+        videoCodec: vcodec.webcodecs,
+        muxerVideoCodec: vcodec.muxer,
+        avcFormat: vcodec.avcFormat,
+        audioCodec: acodec.webcodecs,
+        muxerAudioCodec: acodec.muxer,
+        bitrate: Math.min(8_000_000, Math.max(2_500_000, this.width * this.height * 6)),
+        audioReadable,
+      },
+      audioReadable ? [audioReadable] : []
+    );
     this.startTime = performance.now();
   }
 
-  async pumpAudio() {
-    try {
-      for (;;) {
-        const { value, done } = await this.audioReader.read();
-        if (done || this.stopped) {
-          if (value) value.close();
-          break;
-        }
-        if (this.audioEncoder && this.audioEncoder.state === 'configured') {
-          this.audioEncoder.encode(value);
-        }
-        value.close();
-      }
-    } catch {
-      /* mic track ended */
-    }
-  }
-
-  // called from the render loop with the freshly painted filtered canvas
+  // called from the render loop with the freshly painted filtered canvas;
+  // the frame is transferred to the worker, so this never blocks
   addFrame(canvas) {
-    if (this.stopped || !this.videoEncoder || this.videoEncoder.state !== 'configured') return;
-    if (this.videoEncoder.encodeQueueSize > 4) return; // drop frames when behind
+    if (this.stopped || !this.worker) return;
     const timestamp = Math.round((performance.now() - this.startTime) * 1000);
-    const keyFrame = timestamp - this.lastKey >= 2_000_000;
-    if (keyFrame) this.lastKey = timestamp;
     const frame = new VideoFrame(canvas, { timestamp, duration: 33333 });
-    try {
-      this.videoEncoder.encode(frame, { keyFrame });
-    } catch {
-      /* encoder closed */
-    }
-    frame.close();
+    this.worker.postMessage({ type: 'frame', frame }, [frame]);
   }
 
-  async stop() {
+  stop() {
     this.stopped = true;
-    if (this.audioReader) {
-      try {
-        await this.audioReader.cancel();
-      } catch {
-        /* already ended */
-      }
-    }
-    try {
-      await this.videoEncoder.flush();
-    } catch {
-      /* flushing a dead encoder */
-    }
-    if (this.audioEncoder && this.audioEncoder.state === 'configured') {
-      try {
-        await this.audioEncoder.flush();
-      } catch {
-        /* ignore */
-      }
-    }
-    if (this.error) throw this.error;
-    this.muxer.finalize();
-    return new Blob([this.muxer.target.buffer], { type: 'video/mp4' });
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (this.worker) {
+          this.worker.terminate();
+          this.worker = null;
+        }
+        if (this.ac) {
+          this.ac.close().catch(() => {});
+          this.ac = null;
+        }
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('encoder timed out'));
+      }, 15000);
+      this.worker.onmessage = (e) => {
+        clearTimeout(timer);
+        if (e.data.type === 'done') {
+          this.audioChunkCount = e.data.audioChunkCount; // diagnostics
+          this.audioDurationUs = e.data.audioDurationUs;
+          cleanup();
+          resolve(new Blob([e.data.buffer], { type: 'video/mp4' }));
+        } else {
+          cleanup();
+          reject(new Error(e.data.message));
+        }
+      };
+      this.worker.postMessage({ type: 'stop' });
+    });
   }
 }

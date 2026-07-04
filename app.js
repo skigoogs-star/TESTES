@@ -6,7 +6,7 @@
 import { getFilters, getFilter } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v11'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v12'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -393,8 +393,16 @@ async function toggleRecording() {
   // records with sound whenever the mic is available
   releaseMic();
   try {
+    // raw, camera-style audio: voice-call processing (echo cancellation,
+    // noise suppression, auto gain) mangles music and ambient sound
     audioStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: { ideal: 2 },
+        sampleRate: { ideal: 48000 },
+      },
     });
   } catch (err) {
     audioStream = null;
@@ -431,7 +439,7 @@ async function toggleRecording() {
         height: preview.height,
         audioTrack: hasAudio ? audioStream.getAudioTracks()[0] : null,
       });
-      rec.start();
+      await rec.start();
       let stopping = false;
       controller = {
         addFrame: (canvas) => rec.addFrame(canvas),
