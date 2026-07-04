@@ -4,8 +4,9 @@
 // when a new filter is added.
 
 import { getFilters, getFilter } from './filters.js';
+import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v9'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v10'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -44,8 +45,7 @@ let rafId = 0;
 let toastTimer = 0;
 let brightness = 0; // -3..+3; mapped to a gentle gain so it always works
 
-let recorder = null;
-let recordChunks = [];
+let recorder = null; // active recording controller: { requestStop, addFrame? }
 let recordStartedAt = 0;
 let recordTickInt = 0;
 let audioStream = null;
@@ -162,6 +162,8 @@ function renderLoop() {
     filter.apply(frame, w, h, { preview: true });
     previewCtx.putImageData(frame, 0, 0);
   }
+  // feed the freshly painted frame to the MP4 recorder when one is running
+  if (recorder && recorder.addFrame) recorder.addFrame(preview);
 }
 
 /* ---------------- flash ---------------- */
@@ -319,7 +321,7 @@ function pickRecordingMime(withAudio) {
 
 async function toggleRecording() {
   if (recorder) {
-    recorder.stop();
+    recorder.requestStop();
     return;
   }
   if (!stream) return;
@@ -342,29 +344,54 @@ async function toggleRecording() {
 
   if (flashOn) await setTorch(true);
 
-  const canvasStream = preview.captureStream(30);
-  const tracks = [...canvasStream.getVideoTracks()];
   const hasAudio = !!(audioStream && audioStream.getAudioTracks().length);
-  if (hasAudio) tracks.push(...audioStream.getAudioTracks());
 
-  const mime = pickRecordingMime(hasAudio);
-  try {
-    recorder = new MediaRecorder(
-      new MediaStream(tracks),
-      mime ? { mimeType: mime, audioBitsPerSecond: 128000 } : {}
-    );
-  } catch {
+  // arm the render loop so the canvas paints one frame at recording
+  // resolution before the encoder locks in its dimensions
+  let stopEarly = false;
+  recorder = { requestStop: () => (stopEarly = true) };
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  if (stopEarly || !stream) {
+    recorder = null;
+    setTorch(false);
+    releaseMic();
+    return;
+  }
+
+  // prefer WebCodecs MP4 (H.264 + AAC): the format native camera apps
+  // produce, so phone gallery apps play the sound
+  let controller = null;
+  if (await mp4RecorderSupported(hasAudio)) {
+    try {
+      const rec = new Mp4Recorder({
+        width: preview.width,
+        height: preview.height,
+        audioTrack: hasAudio ? audioStream.getAudioTracks()[0] : null,
+      });
+      rec.start();
+      let stopping = false;
+      controller = {
+        addFrame: (canvas) => rec.addFrame(canvas),
+        requestStop: async () => {
+          if (stopping) return;
+          stopping = true;
+          const blob = await rec.stop().catch(() => null);
+          finalizeRecording(blob, 'mp4');
+        },
+      };
+    } catch {
+      controller = null;
+    }
+  }
+  if (!controller) controller = startMediaRecorder(hasAudio);
+  if (!controller) {
+    recorder = null;
     showToast('Video not supported here');
     setTorch(false);
     releaseMic();
     return;
   }
-  recordChunks = [];
-  recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size) recordChunks.push(e.data);
-  };
-  recorder.onstop = onRecordingStop;
-  recorder.start(1000);
+  recorder = controller;
 
   // live proof of whether sound is being captured on this recording
   recordMic.textContent = hasAudio ? '🎙' : '🔇';
@@ -379,9 +406,43 @@ async function toggleRecording() {
   flipBtn.disabled = true;
 }
 
-function onRecordingStop() {
-  const mimeType = (recorder && recorder.mimeType) || 'video/webm';
-  const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+// fallback recorder for devices without WebCodecs MP4 support
+function startMediaRecorder(hasAudio) {
+  if (!window.MediaRecorder) return null;
+  const canvasStream = preview.captureStream(30);
+  const tracks = [...canvasStream.getVideoTracks()];
+  if (hasAudio) tracks.push(...audioStream.getAudioTracks());
+  const mime = pickRecordingMime(hasAudio);
+  let mr;
+  try {
+    mr = new MediaRecorder(
+      new MediaStream(tracks),
+      mime ? { mimeType: mime, audioBitsPerSecond: 128000 } : {}
+    );
+  } catch {
+    return null;
+  }
+  const chunks = [];
+  mr.ondataavailable = (e) => {
+    if (e.data && e.data.size) chunks.push(e.data);
+  };
+  mr.onstop = () => {
+    const type = mr.mimeType || 'video/webm';
+    finalizeRecording(new Blob(chunks, { type }), type.includes('mp4') ? 'mp4' : 'webm');
+  };
+  mr.start(1000);
+  return {
+    requestStop: () => {
+      try {
+        mr.stop();
+      } catch {
+        /* already stopped */
+      }
+    },
+  };
+}
+
+function finalizeRecording(blob, ext) {
   recorder = null;
   clearInterval(recordTickInt);
   recordTimer.hidden = true;
@@ -391,9 +452,10 @@ function onRecordingStop() {
   setTorch(false);
   releaseMic(); // free the mic between recordings, like a normal camera app
 
-  const blob = new Blob(recordChunks, { type: mimeType });
-  recordChunks = [];
-  if (!blob.size) return;
+  if (!blob || !blob.size) {
+    showToast('Recording failed');
+    return;
+  }
 
   downloadBlob(blob, mediaFilename(ext));
   const thumb = makeThumb(preview);
@@ -676,7 +738,7 @@ lastPhotoBtn.addEventListener('click', openGallery);
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
-    if (recorder) recorder.stop();
+    if (recorder) recorder.requestStop();
     stopCamera();
   } else {
     startCamera();
