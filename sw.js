@@ -1,6 +1,6 @@
 // Minimal service worker: precache the app shell so Retro Cam installs as a
 // PWA and opens offline. Bump VERSION when files change.
-const VERSION = 'retrocam-v7';
+const VERSION = 'retrocam-v8';
 const ASSETS = [
   './',
   './index.html',
@@ -13,7 +13,13 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(ASSETS)));
+  // cache: 'reload' bypasses the HTTP cache so a new version never ships
+  // with stale copies of the app files
+  e.waitUntil(
+    caches
+      .open(VERSION)
+      .then((c) => c.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' }))))
+  );
   self.skipWaiting();
 });
 

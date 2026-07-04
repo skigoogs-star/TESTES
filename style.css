@@ -130,6 +130,20 @@ body {
   }
 }
 
+#record-mic {
+  font-size: 13px;
+}
+
+#app-version {
+  position: absolute;
+  top: max(28px, calc(env(safe-area-inset-top) + 14px));
+  right: 14px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  z-index: 2;
+  pointer-events: none;
+}
+
 #focus-ring {
   position: absolute;
   width: 72px;

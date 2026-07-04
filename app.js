@@ -5,6 +5,8 @@
 
 import { getFilters, getFilter } from './filters.js';
 
+const APP_VERSION = 'v8'; // keep in sync with VERSION in sw.js
+
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
 const CAPTURE_MAX_SIDE = 2048;
@@ -24,6 +26,7 @@ const flipBtn = document.getElementById('flip');
 const flashToggle = document.getElementById('flash-toggle');
 const recordTimer = document.getElementById('record-timer');
 const recordTime = document.getElementById('record-time');
+const recordMic = document.getElementById('record-mic');
 const lastPhotoBtn = document.getElementById('last-photo');
 const lastPhotoImg = document.getElementById('last-photo-img');
 const reviewScreen = document.getElementById('review-screen');
@@ -363,6 +366,9 @@ async function toggleRecording() {
   recorder.onstop = onRecordingStop;
   recorder.start(1000);
 
+  // live proof of whether sound is being captured on this recording
+  recordMic.textContent = hasAudio ? '🎙' : '🔇';
+
   recordStartedAt = Date.now();
   recordTimer.hidden = false;
   recordTickInt = setInterval(() => {
@@ -678,8 +684,27 @@ getShots().then((shots) => {
   if (last && last.thumb && lastPhotoImg.hidden) setThumbnail(last.thumb);
 });
 
+document.getElementById('app-version').textContent = APP_VERSION;
+
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // auto-apply updates: when a new version of the app activates, reload once
+  // so users get fixes without the close-and-reopen dance
+  navigator.serviceWorker
+    .register('./sw.js')
+    .then((reg) => {
+      reg.update().catch(() => {});
+      reg.addEventListener('updatefound', () => {
+        const next = reg.installing;
+        if (!next) return;
+        const hadController = !!navigator.serviceWorker.controller;
+        next.addEventListener('statechange', () => {
+          if (next.state === 'activated' && hadController && !recorder) {
+            location.reload();
+          }
+        });
+      });
+    })
+    .catch(() => {});
 }
 
 startCamera();
