@@ -6,7 +6,7 @@
 import { getFilters, getFilter } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v12'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v13'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -831,6 +831,11 @@ if ('serviceWorker' in navigator) {
     .register('./sw.js')
     .then((reg) => {
       reg.update().catch(() => {});
+      // Android keeps PWAs alive in the background for hours, so a launch-time
+      // check alone misses updates — re-check every time the app is foregrounded
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) reg.update().catch(() => {});
+      });
       reg.addEventListener('updatefound', () => {
         const next = reg.installing;
         if (!next) return;
