@@ -5,7 +5,7 @@
 
 import { getFilters, getFilter } from './filters.js';
 
-const APP_VERSION = 'v8'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v9'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -399,7 +399,12 @@ function onRecordingStop() {
   const thumb = makeThumb(preview);
   setThumbnail(thumb);
   addShot(blob, 'video', thumb);
-  showToast('Saved ✓');
+  showToast(`Saved ✓ ${ext.toUpperCase()}`);
+  if (ext === 'webm') {
+    // this phone couldn't record MP4/AAC; warn that native gallery apps may
+    // play WEBM clips without sound — in-app playback and Share still work
+    setTimeout(() => showToast('Tip: play WEBM clips here or use Share'), 1500);
+  }
 }
 
 /* ---------------- mode switch ---------------- */
