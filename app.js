@@ -6,7 +6,7 @@
 import { getFilters, getFilter, fisheye } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v15'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v16'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -105,18 +105,45 @@ function selectFilter(id) {
 
 /* ---------------- camera ---------------- */
 
+// Phones expose several back lenses (main/ultrawide/macro) and a generic
+// "environment" request can land on one without a flash. The FIRST listed
+// back camera is conventionally the main lens, which has the flash unit.
+// Labels are only readable once camera permission has been granted.
+async function pickBackCameraId() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const backs = devices.filter(
+      (d) => d.kind === 'videoinput' && /back|rear|environment/i.test(d.label)
+    );
+    if (backs.length) return backs[0].deviceId;
+  } catch {
+    /* enumeration unavailable */
+  }
+  return null;
+}
+
 async function startCamera() {
   stopCamera();
   errorBox.hidden = true;
+  const size = { width: { ideal: 1920 }, height: { ideal: 1080 } };
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: facing,
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-      },
-      audio: false,
-    });
+    const backId = facing === 'environment' ? await pickBackCameraId() : null;
+    if (backId) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: backId }, ...size },
+          audio: false,
+        });
+      } catch {
+        stream = null; // that lens failed — fall back to facingMode below
+      }
+    }
+    if (!stream) {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, ...size },
+        audio: false,
+      });
+    }
   } catch (err) {
     showCameraError(err);
     return;
@@ -176,23 +203,35 @@ function renderLoop() {
 
 /* ---------------- flash ---------------- */
 
+function torchEngaged(track, on) {
+  // ground truth: the track's live settings, not the constraint call —
+  // browsers accept best-effort constraints without actually acting
+  try {
+    const s = track.getSettings ? track.getSettings() : {};
+    return 'torch' in s ? s.torch === on : true;
+  } catch {
+    return true;
+  }
+}
+
 async function setTorch(on) {
   const track = stream && stream.getVideoTracks()[0];
   if (!track) return false;
-  // path 1: capability advertised → best-effort apply
+  // path 1: capability advertised → apply and verify
   try {
     if (track.getCapabilities && track.getCapabilities().torch) {
       await track.applyConstraints({ advanced: [{ torch: on }] });
-      return true;
+      if (torchEngaged(track, on)) return true;
     }
   } catch {
     /* fall through */
   }
-  // path 2: some phones support torch without advertising it — a strict
-  // (non-advanced) constraint throws if unsupported, so success is real
+  // path 2: some phones support torch without advertising it. `exact` makes
+  // the constraint required (throws when unsupported) — a bare `torch: on`
+  // is best-effort and "succeeds" everywhere, which broke the fallbacks.
   try {
-    await track.applyConstraints({ torch: on });
-    return true;
+    await track.applyConstraints({ torch: { exact: on } });
+    return torchEngaged(track, on);
   } catch {
     return false;
   }
