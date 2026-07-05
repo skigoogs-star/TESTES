@@ -372,6 +372,20 @@ registerFilter({
   },
 });
 
+// Golden Hour — punchy sunset-light Instagram look: glowing warm skin and
+// highlights, saturated colors (blues survive), deep contrast, clean/no grain.
+registerFilter({
+  id: 'golden-hour',
+  name: 'Golden Hour',
+  apply(imageData, w, h) {
+    const data = imageData.data;
+    desaturate(data, -0.35); // negative = saturation boost
+    splitTone(data, [10, 3, -8], [30, 12, -16]); // warm shadows, golden highlights
+    applyLUT(data, makeCurveLUT({ black: 14, white: 247, contrast: 0.32 }));
+    vignette(data, w, h, 0.16, 0.85);
+  },
+});
+
 // VHS '95 — camcorder tape: color fringing, scanlines, video noise.
 registerFilter({
   id: 'vhs-95',

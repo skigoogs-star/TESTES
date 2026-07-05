@@ -16,6 +16,7 @@ like a real app.
 | **50' cam** | 1950s B&W press photo — grain, glow, vignette |
 | **Super 70s** | Warm faded 70s color film |
 | **Polaroid '89** | Washed-out instant-photo look |
+| **Golden Hour** | Punchy sunset light — glowing warm skin, saturated colors |
 | **VHS '95** | Camcorder tape — fringing, scanlines, noise |
 
 ## Camera controls

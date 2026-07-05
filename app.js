@@ -6,7 +6,7 @@
 import { getFilters, getFilter, fisheye } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v14'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v15'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
