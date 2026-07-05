@@ -271,6 +271,45 @@ export function scanlines(data, w, h, step, amount) {
   }
 }
 
+/**
+ * Fisheye lens warp (barrel distortion) — not a filter, a lens: app.js
+ * applies it before the active filter so grain/vignette stay natural.
+ * strength 0..3. Uses a cached remap table so live preview stays fast.
+ */
+const fisheyeCache = { key: '', lut: null };
+export function fisheye(imageData, w, h, strength) {
+  if (!(strength > 0)) return;
+  const key = `${w}x${h}:${strength.toFixed(2)}`;
+  if (fisheyeCache.key !== key) {
+    const lut = new Int32Array(w * h);
+    const k = strength * 0.35;
+    const cx = (w - 1) / 2;
+    const cy = (h - 1) / 2;
+    let p = 0;
+    for (let y = 0; y < h; y++) {
+      const ny = (y - cy) / cy;
+      for (let x = 0; x < w; x++, p++) {
+        const nx = (x - cx) / cx;
+        const f = 1 + k * (nx * nx + ny * ny);
+        const sx = Math.round(cx + (nx / f) * cx);
+        const sy = Math.round(cy + (ny / f) * cy);
+        lut[p] = sy * w + sx;
+      }
+    }
+    fisheyeCache.key = key;
+    fisheyeCache.lut = lut;
+  }
+  const src = new Uint8ClampedArray(imageData.data);
+  const dst = imageData.data;
+  const lut = fisheyeCache.lut;
+  for (let p = 0, i = 0; p < lut.length; p++, i += 4) {
+    const s = lut[p] * 4;
+    dst[i] = src[s];
+    dst[i + 1] = src[s + 1];
+    dst[i + 2] = src[s + 2];
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Filters                                                             */
 /* ------------------------------------------------------------------ */

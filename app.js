@@ -3,10 +3,10 @@
 // Filters themselves live in filters.js; this file never needs to change
 // when a new filter is added.
 
-import { getFilters, getFilter } from './filters.js';
+import { getFilters, getFilter, fisheye } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v13'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v14'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -35,6 +35,9 @@ const galleryTrack = document.getElementById('gallery-track');
 const galleryCounter = document.getElementById('gallery-counter');
 const focusRing = document.getElementById('focus-ring');
 const exposureSlider = document.getElementById('exposure');
+const fisheyeToggle = document.getElementById('fisheye-toggle');
+const fisheyeControl = document.getElementById('fisheye-control');
+const fisheyeSlider = document.getElementById('fisheye');
 
 let stream = null;
 let facing = 'environment';
@@ -44,6 +47,8 @@ let flashOn = false;
 let rafId = 0;
 let toastTimer = 0;
 let brightness = 0; // -3..+3; mapped to a gentle gain so it always works
+let fisheyeOn = false;
+let fisheyeAmount = Math.min(3, Math.max(0, parseFloat(localStorage.getItem('retrocam-fisheye')) || 1.5));
 
 let recorder = null; // active recording controller: { requestStop, addFrame? }
 let recordStartedAt = 0;
@@ -157,9 +162,12 @@ function renderLoop() {
   previewCtx.drawImage(video, 0, 0, w, h);
   previewCtx.filter = 'none';
   const filter = getFilter(activeFilterId);
-  if (filter.id !== 'normal') {
+  const wantFisheye = fisheyeOn && fisheyeAmount > 0;
+  if (wantFisheye || filter.id !== 'normal') {
     const frame = previewCtx.getImageData(0, 0, w, h);
-    filter.apply(frame, w, h, { preview: true });
+    // lens before film: warp first so the filter's grain/vignette stay natural
+    if (wantFisheye) fisheye(frame, w, h, fisheyeAmount);
+    if (filter.id !== 'normal') filter.apply(frame, w, h, { preview: true });
     previewCtx.putImageData(frame, 0, 0);
   }
   // feed the freshly painted frame to the MP4 recorder when one is running
@@ -299,9 +307,11 @@ async function takePhoto() {
   screenFlash(false);
 
   const filter = getFilter(activeFilterId);
-  if (filter.id !== 'normal') {
+  const wantFisheye = fisheyeOn && fisheyeAmount > 0;
+  if (wantFisheye || filter.id !== 'normal') {
     const frame = ctx.getImageData(0, 0, w, h);
-    filter.apply(frame, w, h, { preview: false });
+    if (wantFisheye) fisheye(frame, w, h, fisheyeAmount);
+    if (filter.id !== 'normal') filter.apply(frame, w, h, { preview: false });
     ctx.putImageData(frame, 0, 0);
   }
 
@@ -759,8 +769,27 @@ function tapToFocus(e) {
 
 viewfinder.addEventListener('pointerdown', (e) => {
   // ignore taps on the overlay controls
-  if (e.target.closest('#exposure-control') || e.target.closest('#flash-toggle')) return;
+  if (e.target.closest('.side-control') || e.target.closest('#flash-toggle') || e.target.closest('#fisheye-toggle')) {
+    return;
+  }
   tapToFocus(e);
+});
+
+/* ---------------- fisheye lens ---------------- */
+
+fisheyeSlider.value = String(fisheyeAmount);
+
+fisheyeToggle.addEventListener('click', () => {
+  fisheyeOn = !fisheyeOn;
+  fisheyeToggle.classList.toggle('off', !fisheyeOn);
+  fisheyeControl.hidden = !fisheyeOn;
+  showToast(fisheyeOn ? `Fisheye on (${fisheyeAmount.toFixed(1)})` : 'Fisheye off');
+});
+
+fisheyeSlider.addEventListener('input', () => {
+  fisheyeAmount = Math.min(3, Math.max(0, parseFloat(fisheyeSlider.value) || 0));
+  localStorage.setItem('retrocam-fisheye', String(fisheyeAmount));
+  showToast(`Fisheye ${fisheyeAmount.toFixed(1)}`);
 });
 
 /* ---------------- brightness ---------------- */
@@ -780,7 +809,7 @@ function resetBrightness() {
 // double-tap the slider to snap back to center — pointer-based so it works
 // on touchscreens, plus dblclick for mouse
 let lastBrightnessTap = 0;
-document.getElementById('exposure-wrap').addEventListener('pointerdown', () => {
+document.querySelector('#exposure-control .vrange-wrap').addEventListener('pointerdown', () => {
   const now = Date.now();
   if (now - lastBrightnessTap < 350) resetBrightness();
   lastBrightnessTap = now;

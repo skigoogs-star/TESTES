@@ -95,6 +95,36 @@ body {
   border-radius: 1px;
 }
 
+#fisheye-toggle {
+  position: absolute;
+  top: max(66px, calc(env(safe-area-inset-top) + 52px));
+  left: 14px;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 20px;
+  z-index: 2;
+}
+
+#fisheye-toggle.off {
+  filter: grayscale(1);
+  opacity: 0.7;
+}
+
+#fisheye-toggle.off::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 21px;
+  width: 24px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.7);
+  transform: rotate(-45deg);
+  border-radius: 1px;
+}
+
 #record-timer {
   position: absolute;
   top: max(66px, calc(env(safe-area-inset-top) + 52px));
@@ -177,9 +207,8 @@ body {
   }
 }
 
-#exposure-control {
+.side-control {
   position: absolute;
-  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -192,24 +221,42 @@ body {
   background: rgba(0, 0, 0, 0.25);
 }
 
-.exposure-icon {
-  font-size: 16px;
-  color: #ffd54a;
+.side-control[hidden] {
+  display: none;
+}
+
+#exposure-control {
+  right: 6px;
+}
+
+#fisheye-control {
+  left: 6px;
+}
+
+.side-icon {
+  font-size: 14px;
+  font-weight: 700;
+  color: #4fc3f7;
   text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
 }
 
-.exposure-icon.dim {
+.side-icon.sun {
+  font-size: 16px;
+  color: #ffd54a;
+}
+
+.side-icon.dim {
   font-size: 11px;
   opacity: 0.7;
 }
 
-#exposure-wrap {
+.vrange-wrap {
   position: relative;
   width: 26px;
   height: 150px;
 }
 
-#exposure {
+.vrange {
   -webkit-appearance: none;
   appearance: none;
   width: 150px;
@@ -223,13 +270,13 @@ body {
   touch-action: none;
 }
 
-#exposure::-webkit-slider-runnable-track {
+.vrange::-webkit-slider-runnable-track {
   height: 3px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.55);
 }
 
-#exposure::-webkit-slider-thumb {
+.vrange::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 22px;
   height: 22px;
@@ -239,18 +286,26 @@ body {
   border: 2px solid rgba(0, 0, 0, 0.35);
 }
 
-#exposure::-moz-range-track {
+.vrange::-moz-range-track {
   height: 3px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.55);
 }
 
-#exposure::-moz-range-thumb {
+.vrange::-moz-range-thumb {
   width: 20px;
   height: 20px;
   border-radius: 50%;
   background: #ffd54a;
   border: 2px solid rgba(0, 0, 0, 0.35);
+}
+
+.vrange.fish::-webkit-slider-thumb {
+  background: #4fc3f7;
+}
+
+.vrange.fish::-moz-range-thumb {
+  background: #4fc3f7;
 }
 
 #filter-name-toast {
