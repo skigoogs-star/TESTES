@@ -6,7 +6,7 @@
 import { getFilters, getFilter, fisheye } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v16'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v17'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -891,6 +891,78 @@ getShots().then((shots) => {
 });
 
 document.getElementById('app-version').textContent = APP_VERSION;
+
+/* ---------------- flash diagnostics (tap the version label) ---------------- */
+
+async function showDiagnostics() {
+  const diagText = document.getElementById('diag-text');
+  const lines = [`Retro Cam ${APP_VERSION}`, `facing: ${facing}`, ''];
+  lines.push(`browser: ${navigator.userAgent}`, '');
+  const track = stream && stream.getVideoTracks()[0];
+  if (!track) {
+    lines.push('NO CAMERA TRACK');
+  } else {
+    lines.push(`camera: ${track.label || '(no label)'}`);
+    let caps = {};
+    try {
+      caps = track.getCapabilities ? track.getCapabilities() : {};
+    } catch {
+      /* ignore */
+    }
+    lines.push(`torch capability: ${'torch' in caps ? JSON.stringify(caps.torch) : 'NOT LISTED'}`);
+    let s = {};
+    try {
+      s = track.getSettings ? track.getSettings() : {};
+    } catch {
+      /* ignore */
+    }
+    lines.push(`settings.torch: ${'torch' in s ? s.torch : 'n/a'}`);
+
+    // live attempt — if the phone supports it AT ALL, the torch lights now
+    let attempt;
+    try {
+      await track.applyConstraints({ torch: { exact: true } });
+      const on = !!(track.getSettings && track.getSettings().torch);
+      attempt = on
+        ? 'EXACT constraint OK — torch should be LIT right now'
+        : 'constraint accepted but settings.torch=false (browser ignored it)';
+      setTimeout(() => {
+        track.applyConstraints({ torch: { exact: false } }).catch(() => {});
+        track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
+      }, 1500);
+    } catch (e) {
+      attempt = `exact constraint REJECTED: ${(e && e.name) || e}`;
+    }
+    lines.push(`torch attempt: ${attempt}`);
+
+    if ('ImageCapture' in window) {
+      try {
+        const pc = await new ImageCapture(track).getPhotoCapabilities();
+        lines.push(`fillLightMode: ${JSON.stringify(pc && pc.fillLightMode)}`);
+      } catch (e) {
+        lines.push(`ImageCapture caps failed: ${(e && e.name) || e}`);
+      }
+    } else {
+      lines.push('ImageCapture: not available');
+    }
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter((d) => d.kind === 'videoinput');
+      lines.push('', `cameras (${cams.length}):`);
+      for (const c of cams) lines.push(`  ${c.label || '(hidden label)'}`);
+    } catch {
+      /* ignore */
+    }
+  }
+  diagText.textContent = lines.join('\n');
+  document.getElementById('diag-panel').hidden = false;
+}
+
+document.getElementById('app-version').addEventListener('click', showDiagnostics);
+document.getElementById('diag-close').addEventListener('click', () => {
+  document.getElementById('diag-panel').hidden = true;
+});
 
 if ('serviceWorker' in navigator) {
   // auto-apply updates: when a new version of the app activates, reload once
