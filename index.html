@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Retro Cam</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="app">
+    <!-- Camera screen -->
+    <section id="camera-screen">
+      <div id="viewfinder">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="preview"></canvas>
+        <div id="flash"></div>
+        <div id="focus-ring"></div>
+        <div id="filter-name-toast"></div>
+        <button id="flash-toggle" type="button" class="off" aria-label="Flash">⚡</button>
+        <button id="fisheye-toggle" type="button" class="off" aria-label="Fisheye">🌀</button>
+        <div id="record-timer" hidden><span class="rec-dot"></span><span id="record-time">0:00</span><span id="record-mic"></span></div>
+        <div id="app-version"></div>
+        <div id="diag-panel" hidden>
+          <pre id="diag-text"></pre>
+          <button id="diag-close" type="button">Close</button>
+        </div>
+        <div id="exposure-control" class="side-control">
+          <span class="side-icon sun">☀</span>
+          <div class="vrange-wrap">
+            <input id="exposure" class="vrange" type="range" min="-3" max="3" step="0.1" value="0" aria-label="Brightness" />
+          </div>
+          <span class="side-icon sun dim">☀</span>
+        </div>
+        <div id="fisheye-control" class="side-control" hidden>
+          <span class="side-icon">3</span>
+          <div class="vrange-wrap">
+            <input id="fisheye" class="vrange fish" type="range" min="0" max="3" step="0.1" value="1.5" aria-label="Fisheye strength" />
+          </div>
+          <span class="side-icon dim">0</span>
+        </div>
+      </div>
+
+      <div id="camera-error" hidden>
+        <p id="camera-error-msg">Camera unavailable.</p>
+        <button id="retry-camera" type="button">Try again</button>
+      </div>
+
+      <div id="controls">
+        <div id="filter-strip" role="listbox" aria-label="Filters"></div>
+        <div id="mode-switch">
+          <button type="button" data-mode="photo" class="active">PHOTO</button>
+          <button type="button" data-mode="video">VIDEO</button>
+        </div>
+        <div id="buttons-row">
+          <button id="last-photo" type="button" aria-label="Gallery">
+            <img id="last-photo-img" alt="" hidden />
+          </button>
+          <button id="shutter" type="button" aria-label="Take photo"></button>
+          <button id="flip" type="button" aria-label="Switch camera">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+              <path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" />
+              <polyline points="16 3 13 5 16 7" />
+              <polyline points="8 21 11 19 8 17" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Gallery screen (all shots taken with the app) -->
+    <section id="review-screen" hidden>
+      <div id="gallery-header">
+        <span id="gallery-counter"></span>
+      </div>
+      <div id="gallery-track"></div>
+      <div id="review-bar">
+        <button id="close-review" type="button">Close</button>
+        <button id="delete-shot" type="button">Delete</button>
+        <button id="save" type="button">Save</button>
+        <button id="share" type="button">Share</button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
