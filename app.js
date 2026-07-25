@@ -6,7 +6,7 @@
 import { getFilters, getFilter, fisheye } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v17'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v18'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -105,21 +105,95 @@ function selectFilter(id) {
 
 /* ---------------- camera ---------------- */
 
-// Phones expose several back lenses (main/ultrawide/macro) and a generic
-// "environment" request can land on one without a flash. The FIRST listed
-// back camera is conventionally the main lens, which has the flash unit.
-// Labels are only readable once camera permission has been granted.
-async function pickBackCameraId() {
+// Phones expose several back lenses (main/ultrawide/macro/depth) and only
+// the main one has the flash unit. Guessing by list order is unreliable, so
+// once the user asks for flash we PROBE the lenses for a real torch (see
+// ensureTorchCamera) and remember the winner here.
+let torchCamId = localStorage.getItem('retrocam-torchcam') || null;
+
+async function listBackCameras() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const backs = devices.filter(
       (d) => d.kind === 'videoinput' && /back|rear|environment/i.test(d.label)
     );
-    if (backs.length) return backs[0].deviceId;
+    // best guess ordering until a torch probe settles it: main lens first
+    // ("camera2 0" on Android), specialty lenses (ultra/tele/macro/depth) last
+    const score = (label) => {
+      if (/camera2 0\b/i.test(label)) return -1;
+      if (/ultra|tele|macro|depth|zoom/i.test(label)) return 1;
+      return 0;
+    };
+    return backs.sort((a, b) => score(a.label) - score(b.label));
   } catch {
-    /* enumeration unavailable */
+    return [];
   }
-  return null;
+}
+
+async function pickBackCameraId() {
+  if (torchCamId) return torchCamId;
+  const backs = await listBackCameras();
+  return backs.length ? backs[0].deviceId : null;
+}
+
+// The torch capability can populate a beat AFTER the camera opens (Chrome
+// quirk), so poll briefly instead of reading once.
+async function trackGrowsTorch(track, tries = 4) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      if (track.getCapabilities && track.getCapabilities().torch) return true;
+    } catch {
+      /* keep polling */
+    }
+    await sleep(200);
+  }
+  return false;
+}
+
+let torchProbeDone = false;
+
+// Find and switch to the back lens that really has the flash. Phones only
+// allow one camera open at a time, so this briefly cycles through lenses
+// the first time flash is enabled, then remembers the winner.
+async function ensureTorchCamera() {
+  const track = stream && stream.getVideoTracks()[0];
+  if (track && (await trackGrowsTorch(track))) {
+    torchProbeDone = true;
+    return true;
+  }
+  if (torchProbeDone) return false; // already searched this session
+  torchProbeDone = true;
+
+  const currentId = track && track.getSettings ? track.getSettings().deviceId : null;
+  const backs = (await listBackCameras()).filter((d) => d.deviceId !== currentId);
+  if (!backs.length) return false;
+
+  stopCamera(); // release the camera so other lenses can open
+  let winner = null;
+  for (const dev of backs) {
+    let probe = null;
+    try {
+      probe = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: dev.deviceId } },
+        audio: false,
+      });
+      const t = probe.getVideoTracks()[0];
+      const hasTorch = await trackGrowsTorch(t);
+      for (const tr of probe.getTracks()) tr.stop();
+      if (hasTorch) {
+        winner = dev.deviceId;
+        break;
+      }
+    } catch {
+      if (probe) for (const tr of probe.getTracks()) tr.stop();
+    }
+  }
+  if (winner) {
+    torchCamId = winner;
+    localStorage.setItem('retrocam-torchcam', winner);
+  }
+  await startCamera(); // reopens with torchCamId when one was found
+  return !!winner;
 }
 
 async function startCamera() {
@@ -136,6 +210,10 @@ async function startCamera() {
         });
       } catch {
         stream = null; // that lens failed — fall back to facingMode below
+        if (backId === torchCamId) {
+          torchCamId = null; // stored lens no longer exists
+          localStorage.removeItem('retrocam-torchcam');
+        }
       }
     }
     if (!stream) {
@@ -259,7 +337,10 @@ function screenFlash(on) {
   flash.classList.toggle('screen', on);
 }
 
+let flashProbing = false;
+
 flashToggle.addEventListener('click', async () => {
+  if (flashProbing) return;
   flashOn = !flashOn;
   flashToggle.classList.toggle('off', !flashOn);
   // if toggled off mid-recording, kill the torch
@@ -274,21 +355,33 @@ flashToggle.addEventListener('click', async () => {
     showToast('Flash on (screen)');
     return;
   }
+  if (recorder) return; // can't switch lenses mid-recording
+
+  flashProbing = true;
+  showToast('Flash: checking…');
   let kind = 'screen';
-  if (await setTorch(true)) {
-    kind = 'torch';
-    if (!recorder) setTorch(false); // probe only — light it for real at capture
-  } else {
-    try {
-      if ('ImageCapture' in window && stream) {
+  try {
+    // switches to the torch-capable back lens when one exists
+    if (await ensureTorchCamera()) {
+      // confirm it truly lights, then turn it off until capture
+      if (await setTorch(true)) {
+        kind = 'torch';
+        await sleep(250); // visible blink = proof for the user
+        setTorch(false);
+      }
+    }
+    if (kind === 'screen' && 'ImageCapture' in window && stream) {
+      try {
         const caps = await new ImageCapture(stream.getVideoTracks()[0]).getPhotoCapabilities();
         if (caps && Array.isArray(caps.fillLightMode) && caps.fillLightMode.includes('flash')) {
           kind = 'camera flash';
         }
+      } catch {
+        /* stay on screen */
       }
-    } catch {
-      /* stay on screen */
     }
+  } finally {
+    flashProbing = false;
   }
   showToast(`Flash on (${kind})`);
 });
@@ -950,7 +1043,11 @@ async function showDiagnostics() {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cams = devices.filter((d) => d.kind === 'videoinput');
       lines.push('', `cameras (${cams.length}):`);
-      for (const c of cams) lines.push(`  ${c.label || '(hidden label)'}`);
+      for (const c of cams) {
+        const mark = torchCamId && c.deviceId === torchCamId ? '  ← saved torch lens' : '';
+        lines.push(`  ${c.label || '(hidden label)'}${mark}`);
+      }
+      lines.push(`torch lens saved: ${torchCamId ? 'yes' : 'no'}`);
     } catch {
       /* ignore */
     }
