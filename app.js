@@ -6,7 +6,7 @@
 import { getFilters, getFilter, fisheye } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v18'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v19'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -57,6 +57,9 @@ let audioStream = null;
 
 let galleryItems = [];
 let galleryUrls = [];
+
+let zoom = 1;
+let zoomCaps = null; // hardware zoom range when the camera exposes one
 
 function brightnessGain() {
   // 1.5 slider units per stop: the ±3 range spans ±2 stops, so each nudge
@@ -229,8 +232,96 @@ async function startCamera() {
   video.srcObject = stream;
   await video.play().catch(() => {});
   preview.classList.toggle('mirrored', facing === 'user');
+  resetZoomForNewCamera();
   renderLoop();
 }
+
+/* ---------------- zoom ---------------- */
+
+const zoomBadge = document.getElementById('zoom-badge');
+
+function refreshZoomCaps() {
+  zoomCaps = null;
+  try {
+    const track = stream && stream.getVideoTracks()[0];
+    const c = track && track.getCapabilities ? track.getCapabilities() : {};
+    if (c.zoom && c.zoom.max > (c.zoom.min || 1)) zoomCaps = c.zoom;
+  } catch {
+    /* no hardware zoom */
+  }
+}
+
+function resetZoomForNewCamera() {
+  zoom = 1;
+  refreshZoomCaps();
+  // zoom capability can populate late, like torch — check again shortly
+  setTimeout(refreshZoomCaps, 600);
+  updateZoomUI();
+}
+
+function maxZoom() {
+  return zoomCaps ? Math.min(zoomCaps.max, 10) : 5;
+}
+
+// digital fallback: how much of the crop the canvas draw must do
+function digitalZoom() {
+  return zoomCaps ? 1 : zoom;
+}
+
+function updateZoomUI() {
+  zoomBadge.textContent = `${zoom.toFixed(1)}×`;
+}
+
+let zoomApplyPending = false;
+
+function setZoom(z) {
+  zoom = Math.min(maxZoom(), Math.max(1, z));
+  updateZoomUI();
+  if (!zoomCaps || zoomApplyPending) return;
+  // hardware zoom: throttle constraint calls while the pinch is moving
+  zoomApplyPending = true;
+  setTimeout(() => {
+    zoomApplyPending = false;
+    const track = stream && stream.getVideoTracks()[0];
+    if (!track) return;
+    const val = Math.min(zoomCaps.max, Math.max(zoomCaps.min || 1, zoom));
+    track.applyConstraints({ advanced: [{ zoom: val }] }).catch(() => {});
+  }, 60);
+}
+
+zoomBadge.addEventListener('click', () => {
+  setZoom(1);
+  showToast('Zoom 1.0×');
+});
+
+// pinch-to-zoom on the viewfinder
+const activePointers = new Map();
+let pinchStart = null;
+
+viewfinder.addEventListener('pointerdown', (e) => {
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size === 2) {
+    const [a, b] = [...activePointers.values()];
+    pinchStart = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom };
+  }
+});
+
+viewfinder.addEventListener('pointermove', (e) => {
+  if (!activePointers.has(e.pointerId)) return;
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinchStart && activePointers.size === 2) {
+    const [a, b] = [...activePointers.values()];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchStart.dist > 0) setZoom(pinchStart.zoom * (dist / pinchStart.dist));
+  }
+});
+
+function endPointer(e) {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinchStart = null;
+}
+viewfinder.addEventListener('pointerup', endPointer);
+viewfinder.addEventListener('pointercancel', endPointer);
 
 function stopCamera() {
   cancelAnimationFrame(rafId);
@@ -264,7 +355,15 @@ function renderLoop() {
   }
 
   previewCtx.filter = brightness ? `brightness(${brightnessGain()})` : 'none';
-  previewCtx.drawImage(video, 0, 0, w, h);
+  const dz = digitalZoom();
+  if (dz > 1.001) {
+    // center-crop digital zoom (hardware zoom handles this in the sensor)
+    const sw2 = vw / dz;
+    const sh2 = vh / dz;
+    previewCtx.drawImage(video, (vw - sw2) / 2, (vh - sh2) / 2, sw2, sh2, 0, 0, w, h);
+  } else {
+    previewCtx.drawImage(video, 0, 0, w, h);
+  }
   previewCtx.filter = 'none';
   const filter = getFilter(activeFilterId);
   const wantFisheye = fisheyeOn && fisheyeAmount > 0;
@@ -430,7 +529,14 @@ async function takePhoto() {
     ctx.scale(-1, 1);
   }
   ctx.filter = brightness ? `brightness(${brightnessGain()})` : 'none';
-  ctx.drawImage(source, 0, 0, w, h);
+  const dz = digitalZoom();
+  if (dz > 1.001) {
+    const sw2 = sw / dz;
+    const sh2 = sh / dz;
+    ctx.drawImage(source, (sw - sw2) / 2, (sh - sh2) / 2, sw2, sh2, 0, 0, w, h);
+  } else {
+    ctx.drawImage(source, 0, 0, w, h);
+  }
   ctx.filter = 'none';
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   if (flashBitmap) flashBitmap.close();
@@ -900,8 +1006,13 @@ function tapToFocus(e) {
 }
 
 viewfinder.addEventListener('pointerdown', (e) => {
-  // ignore taps on the overlay controls
-  if (e.target.closest('.side-control') || e.target.closest('#flash-toggle') || e.target.closest('#fisheye-toggle')) {
+  // ignore taps on the overlay controls, and second fingers (pinch zoom)
+  if (
+    activePointers.size >= 2 ||
+    e.target.closest('.side-control') ||
+    e.target.closest('#flash-toggle') ||
+    e.target.closest('#fisheye-toggle')
+  ) {
     return;
   }
   tapToFocus(e);
