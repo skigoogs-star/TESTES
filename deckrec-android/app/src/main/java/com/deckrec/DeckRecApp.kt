@@ -35,7 +35,11 @@ class DeckRecApp : Application() {
         instance = this
 
         settingsStore = SettingsStore(this)
-        recordingStore = RecordingStore(this).apply { refresh() }
+        recordingStore = RecordingStore(this).apply {
+            // Adopt anything a previous crash left behind before the library is first read.
+            recoverOrphans()
+            refresh()
+        }
         usbAudioScanner = UsbAudioScanner(this).apply { start() }
         recordingEngine = RecordingEngine(this, usbAudioScanner, recordingStore)
 

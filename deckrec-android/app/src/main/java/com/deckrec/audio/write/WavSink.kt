@@ -187,6 +187,50 @@ class WavSink(
             return Math.round(clamped * 32767f)
         }
 
+        /** The parts of a WAV header this app needs to describe a file it did not just write. */
+        data class WavInfo(
+            val sampleRate: Int,
+            val channels: Int,
+            val bitsPerSample: Int,
+            val dataBytes: Long,
+        ) {
+            val durationMs: Long
+                get() {
+                    val frameBytes = channels * (bitsPerSample / 8)
+                    if (frameBytes <= 0 || sampleRate <= 0) return 0
+                    return dataBytes / frameBytes * 1000L / sampleRate
+                }
+        }
+
+        /** Reads a canonical 44-byte PCM header; null if the file is not one. */
+        fun readHeader(file: File): WavInfo? = runCatching {
+            RandomAccessFile(file, "r").use { raf ->
+                if (raf.length() < HEADER_BYTES) return null
+                val header = ByteArray(HEADER_BYTES)
+                raf.readFully(header)
+                if (String(header, 0, 4, Charsets.US_ASCII) != "RIFF") return null
+                if (String(header, 8, 4, Charsets.US_ASCII) != "WAVE") return null
+                val declaredData = readIntLe(header, 40).toLong() and 0xFFFFFFFFL
+                val actualData = raf.length() - HEADER_BYTES
+                WavInfo(
+                    channels = readShortLe(header, 22),
+                    sampleRate = readIntLe(header, 24),
+                    bitsPerSample = readShortLe(header, 34),
+                    // A file killed before finish() ran still declares zero; trust the length then.
+                    dataBytes = if (declaredData in 1..actualData) declaredData else actualData,
+                )
+            }
+        }.getOrNull()
+
+        private fun readIntLe(bytes: ByteArray, offset: Int): Int =
+            (bytes[offset].toInt() and 0xFF) or
+                ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
+                ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
+                ((bytes[offset + 3].toInt() and 0xFF) shl 24)
+
+        private fun readShortLe(bytes: ByteArray, offset: Int): Int =
+            (bytes[offset].toInt() and 0xFF) or ((bytes[offset + 1].toInt() and 0xFF) shl 8)
+
         /**
          * Patches the header of a WAV whose writer was killed before [finish] ran, using the file
          * length to work out how much audio actually made it to disk.

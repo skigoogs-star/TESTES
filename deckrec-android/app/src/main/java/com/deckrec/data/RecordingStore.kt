@@ -3,6 +3,7 @@ package com.deckrec.data
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -10,6 +11,7 @@ import android.os.StatFs
 import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import com.deckrec.audio.RecorderConfig
+import com.deckrec.audio.write.WavSink
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -99,6 +101,84 @@ class RecordingStore(private val context: Context) {
             ?.sortedByDescending { it.createdAtEpochMs }
             ?: emptyList()
         _recordings.value = metas
+    }
+
+    /**
+     * Adopts audio files that have no sidecar and repairs their headers.
+     *
+     * A phone that dies mid-set leaves a WAV whose size fields were never patched — playable by
+     * nothing until the header is fixed. Running this at launch means the worst case for a crash
+     * is a set with no markers rather than a set that is gone.
+     *
+     * @return how many files were recovered.
+     */
+    fun recoverOrphans(): Int {
+        val known = metaDir.listFiles { file -> file.extension == "json" }
+            ?.mapNotNull {
+                runCatching { json.decodeFromString(RecordingMeta.serializer(), it.readText()) }.getOrNull()
+            }
+            ?.map { it.fileName }
+            ?.toSet()
+            ?: emptySet()
+
+        val orphans = recordingsDir.listFiles { file ->
+            file.isFile && file.extension.lowercase() in AUDIO_EXTENSIONS && file.name !in known
+        } ?: return 0
+
+        var recovered = 0
+        orphans.forEach { file ->
+            val meta = runCatching { adopt(file) }.getOrNull()
+            if (meta != null) {
+                runCatching {
+                    File(metaDir, "${meta.id}.json")
+                        .writeText(json.encodeToString(RecordingMeta.serializer(), meta))
+                }
+                recovered++
+            }
+        }
+        if (recovered > 0) refresh()
+        return recovered
+    }
+
+    private fun adopt(file: File): RecordingMeta? {
+        val isWav = file.extension.equals("wav", ignoreCase = true)
+        if (isWav) WavSink.repairTruncated(file)
+
+        val info = if (isWav) WavSink.readHeader(file) else null
+        val format = when {
+            !isWav -> RecordingFormat.AAC
+            info?.bitsPerSample == 16 -> RecordingFormat.WAV_16
+            else -> RecordingFormat.WAV_24
+        }
+        val durationMs = info?.durationMs ?: durationFromMediaMetadata(file)
+
+        return RecordingMeta(
+            id = UUID.randomUUID().toString(),
+            fileName = file.name,
+            title = file.nameWithoutExtension,
+            createdAtEpochMs = file.lastModified(),
+            durationMs = durationMs,
+            sampleRate = info?.sampleRate ?: 48000,
+            channels = info?.channels ?: 2,
+            format = format,
+            sourceDeviceName = "",
+            sizeBytes = file.length(),
+            notes = "Recovered after the app stopped unexpectedly.",
+        )
+    }
+
+    private fun durationFromMediaMetadata(file: File): Long {
+        // Not `use {}`: MediaMetadataRetriever only became AutoCloseable in API 29, and this app
+        // supports API 26, where calling close() would blow up at runtime.
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        } catch (e: Exception) {
+            0L
+        } finally {
+            runCatching { retriever.release() }
+        }
     }
 
     fun find(id: String): RecordingMeta? = _recordings.value.firstOrNull { it.id == id }
@@ -208,5 +288,6 @@ class RecordingStore(private val context: Context) {
 
     private companion object {
         const val COPY_BUFFER = 256 * 1024
+        val AUDIO_EXTENSIONS = setOf("wav", "m4a")
     }
 }
