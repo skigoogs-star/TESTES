@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DeckRec</string>
+    <string name="channel_recording_name">Recording</string>
+    <string name="channel_recording_desc">Shows the live recording status and controls</string>
+</resources>
