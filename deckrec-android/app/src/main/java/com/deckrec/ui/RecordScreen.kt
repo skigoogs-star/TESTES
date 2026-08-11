@@ -193,8 +193,24 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
         }
 
         // The diagnosis, in order of what the user can actually do about it. Each branch names a
-        // different cause; "connected but no input" covers three unrelated problems otherwise.
+        // different cause; "connected but no input" covers four unrelated problems otherwise.
+        //
+        // Order is load-bearing. The vendor-specific branch must come before the generic ones,
+        // because for that hardware every other suggestion below is a wild goose chase.
         val advice: Pair<String, String>? = when {
+            !state.diagnostics.hostSupported ->
+                "This phone cannot host USB devices" to
+                    "Android reports no USB host support, so no mixer can be connected directly. " +
+                        "Record through the phone's own microphone, or use another phone."
+
+            state.djHardwareIsVendorSpecific ->
+                "${state.diagnostics.vendorSpecificDjHardware.first().label()} cannot be recorded this way" to
+                    "Pioneer/AlphaTheta mixers put their audio on a vendor-specific USB interface " +
+                        "rather than the standard one, which is why they need a driver on Mac and " +
+                        "Windows. Android's audio system only binds standard USB audio, so it will " +
+                        "never offer this unit as an input, whatever you change on the mixer. " +
+                        "Take the master or REC OUT into a class-compliant USB interface instead."
+
             state.diagnostics.looksLikeWrongPort ->
                 "Your phone is acting as a USB device" to
                     "Something else is the USB host — you are probably plugged into the mixer's " +
@@ -202,14 +218,21 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
 
             state.connectedButNotAudioClass ->
                 "Connected, but not offering audio" to
-                    "${state.diagnostics.busDevices.firstOrNull()?.label() ?: "The device"} is on " +
-                        "the USB bus but does not advertise a USB audio interface in its current " +
-                        "mode. On an all-in-one, press SOURCE and choose SOFTWARE CONTROL (PC/MAC)."
+                    "${state.diagnostics.audioCapableDevices.firstOrNull()?.label() ?: "The device"} " +
+                        "is on the USB bus but does not advertise a USB audio interface in its " +
+                        "current mode. On an all-in-one, press SOURCE and choose SOFTWARE CONTROL."
 
+            // Reached only when audioClassDevices is non-empty, so "advertises USB audio" is true
+            // here — see hasUnroutedDjHardware. Keep this branch below the ones above.
             state.hasUnroutedDjHardware ->
                 "Connected, but Android has not exposed it" to
-                    "The mixer advertises USB audio, but Android has not created a recording " +
+                    "The device advertises USB audio, but Android has not created a recording " +
                         "input for it. Try unplugging and replugging, or a different cable."
+
+            state.diagnostics.mayBeWrongPort && state.selectedInput?.isUsb != true ->
+                "Powered over USB, with nothing on the bus" to
+                    "Either this is just a charger, or you are plugged into a socket that expects " +
+                        "a USB drive. If you meant to connect a mixer, use its PC/MAC port."
 
             else -> null
         }
@@ -277,8 +300,11 @@ private fun ConnectionDetails(state: RecordUiState) {
     val lines = buildList {
         add("USB host mode: ${if (state.diagnostics.hostSupported) "supported" else "NOT supported"}")
         add(
-            "This phone is a USB " +
-                if (state.diagnostics.phoneIsPeripheral) "device (something else is the host)" else "host"
+            "This phone's own port: " + when {
+                state.diagnostics.usbConfigured -> "enumerated by another host"
+                state.diagnostics.usbConnected -> "powered, not enumerated"
+                else -> "idle"
+            }
         )
         if (state.diagnostics.busDevices.isEmpty()) {
             add("USB bus: nothing enumerated")

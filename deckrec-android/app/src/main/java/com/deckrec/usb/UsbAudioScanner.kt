@@ -42,6 +42,8 @@ class UsbAudioScanner(context: Context) {
     private val _diagnostics = MutableStateFlow(UsbDiagnostics())
     val diagnostics: StateFlow<UsbDiagnostics> = _diagnostics.asStateFlow()
 
+    /** Written on the main thread by [refresh], read from the engine's control thread. */
+    @Volatile
     private var liveDevices: Array<AudioDeviceInfo> = emptyArray()
 
     private val callback = object : AudioDeviceCallback() {
@@ -67,10 +69,12 @@ class UsbAudioScanner(context: Context) {
             .sortedWith(compareByDescending<AudioInput> { it.isUsb }.thenBy { it.productName })
 
         val bus = scanUsbBus()
+        val gadget = readGadgetState()
         _diagnostics.value = UsbDiagnostics(
             hostSupported = appContext.packageManager
                 .hasSystemFeature(PackageManager.FEATURE_USB_HOST),
-            phoneIsPeripheral = detectPeripheralMode(),
+            usbConnected = gadget.connected,
+            usbConfigured = gadget.configured,
             busDevices = bus,
             allEndpoints = all,
         )
@@ -83,21 +87,34 @@ class UsbAudioScanner(context: Context) {
         _inputs.value.firstOrNull { it.isUsb } ?: _inputs.value.firstOrNull()
 
     /**
-     * True when this phone has been enumerated as a USB device by something else.
+     * The phone's own USB gadget state — whether *something else* is acting as the host.
      *
-     * This is the signature of plugging into a mixer's thumb-drive socket: the mixer is the host,
-     * the phone is a peripheral, and no amount of scanning will ever find an audio input because
-     * the phone is not doing the enumerating. The sticky USB_STATE broadcast reports it directly;
-     * being powered over USB with an empty host bus is the weaker public fallback.
+     * This is what distinguishes plugging into a mixer's thumb-drive socket from nothing being
+     * plugged in at all: in the first case the mixer is the host and the phone is a peripheral, so
+     * no amount of scanning will ever find an audio input, because the phone is not the one
+     * enumerating.
+     *
+     * The two extras have to be read separately. `connected` tracks VBUS, so it goes true for a
+     * plain wall charger that never enumerates anything; treating that alone as "some other host
+     * has us" told a user sitting at home on a charger that they were plugged into a mixer.
+     * `configured` only goes true once a host has issued SET_CONFIGURATION, which a charger never
+     * does. Note the converse is not proof either: a host that *rejects* the phone — an RX3 showing
+     * E-8307, say — can stop before SET_CONFIGURATION, so connected-but-unconfigured is genuinely
+     * ambiguous rather than a "no".
      */
-    private fun detectPeripheralMode(): Boolean {
+    private fun readGadgetState(): GadgetState {
         val usbState = runCatching {
             appContext.registerReceiver(null, IntentFilter(ACTION_USB_STATE))
         }.getOrNull()
         if (usbState != null) {
-            return usbState.getBooleanExtra("connected", false)
+            return GadgetState(
+                connected = usbState.getBooleanExtra("connected", false),
+                configured = usbState.getBooleanExtra("configured", false),
+            )
         }
-        return chargingOverUsb() && usbManager.deviceList.isEmpty()
+        // No sticky broadcast on this build: charging over USB with an empty host bus is the only
+        // public signal left, and it cannot tell configured from merely powered.
+        return GadgetState(connected = chargingOverUsb(), configured = false)
     }
 
     private fun chargingOverUsb(): Boolean {
@@ -107,6 +124,8 @@ class UsbAudioScanner(context: Context) {
         val plugged = battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: -1
         return plugged == BatteryManager.BATTERY_PLUGGED_USB
     }
+
+    private data class GadgetState(val connected: Boolean, val configured: Boolean)
 
     /** Every device on the bus, not only audio-class ones: a mixer that enumerates with the wrong
      * class is invisible otherwise, and that is worth seeing when nothing works. */
@@ -154,18 +173,42 @@ class UsbAudioScanner(context: Context) {
 /** Everything the app can find out about how this phone is currently wired up. */
 data class UsbDiagnostics(
     val hostSupported: Boolean = false,
-    val phoneIsPeripheral: Boolean = false,
+    /** VBUS is present on the phone's own port — true for a plain charger too. */
+    val usbConnected: Boolean = false,
+    /** Some other host has issued SET_CONFIGURATION to this phone. A charger never does. */
+    val usbConfigured: Boolean = false,
     val busDevices: List<UsbHardware> = emptyList(),
     /** Every capture endpoint the platform reports, including ones apps cannot record from. */
     val allEndpoints: List<AudioInput> = emptyList(),
 ) {
     val audioClassDevices: List<UsbHardware> get() = busDevices.filter { it.hasAudioInterface }
 
+    /** Bus devices worth naming as "your mixer"; a hub or a card reader is neither. */
+    val audioCapableDevices: List<UsbHardware>
+        get() = busDevices.filter { it.hasAudioInterface || it.isKnownDjHardware }
+
     /**
-     * The phone is a peripheral and nothing is on the host bus — the classic wrong-port symptom.
+     * Known DJ hardware that does not advertise a USB audio interface.
+     *
+     * This is the Pioneer/AlphaTheta case and it is terminal for the stock audio path: the DJM and
+     * XDJ families present their PCM streams on vendor-specific interfaces (class 0xFF), which is
+     * why Linux carries hand-written endpoint quirks for them and why macOS needs a Pioneer driver.
+     * Android's UsbAlsaManager only ever binds class-compliant interfaces, so it will never create
+     * a capture endpoint for one of these, no matter what the user changes on the mixer.
      */
+    val vendorSpecificDjHardware: List<UsbHardware>
+        get() = busDevices.filter { it.isKnownDjHardware && !it.hasAudioInterface }
+
+    /** Something else is definitely the host — the classic wrong-port symptom. */
     val looksLikeWrongPort: Boolean
-        get() = phoneIsPeripheral && busDevices.isEmpty()
+        get() = usbConnected && usbConfigured && busDevices.isEmpty()
+
+    /**
+     * Powered over USB with nothing on the host bus. Could be the wrong port, could be a charger:
+     * worth mentioning, not worth asserting.
+     */
+    val mayBeWrongPort: Boolean
+        get() = usbConnected && !usbConfigured && busDevices.isEmpty()
 }
 
 /** A USB device visible on the bus. */

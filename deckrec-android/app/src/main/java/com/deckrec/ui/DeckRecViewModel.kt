@@ -55,15 +55,27 @@ data class RecordUiState(
     val isBusy: Boolean get() = state is RecorderState.Starting || state is RecorderState.Stopping
 
     /**
-     * A USB audio device is on the bus but the audio system has not turned it into a capture
-     * endpoint — the single most common failure in the booth, and worth calling out.
+     * A class-compliant USB audio device is on the bus but the audio system has not turned it into
+     * a capture endpoint — worth calling out, because a replug usually fixes it.
+     *
+     * Deliberately keyed on [UsbDiagnostics.audioClassDevices] rather than "anything on the bus":
+     * a hub, a dock or a card reader is not a mixer, and describing one as an unrouted mixer sends
+     * the user hunting for a fault that is not there.
      */
     val hasUnroutedDjHardware: Boolean
-        get() = diagnostics.busDevices.isNotEmpty() && inputs.none { it.isUsb }
+        get() = diagnostics.audioClassDevices.isNotEmpty() && inputs.none { it.isUsb }
 
-    /** The connected hardware does not even advertise an audio interface in its current mode. */
+    /**
+     * Known DJ hardware that cannot ever work over the stock audio path — see
+     * [UsbDiagnostics.vendorSpecificDjHardware]. Checked before everything else, because no other
+     * advice applies once this is true.
+     */
+    val djHardwareIsVendorSpecific: Boolean
+        get() = diagnostics.vendorSpecificDjHardware.isNotEmpty()
+
+    /** Audio-capable hardware is attached but offers no audio interface in its current mode. */
     val connectedButNotAudioClass: Boolean
-        get() = diagnostics.busDevices.isNotEmpty() && diagnostics.audioClassDevices.isEmpty()
+        get() = diagnostics.audioCapableDevices.isNotEmpty() && diagnostics.audioClassDevices.isEmpty()
 
     val channelPairs: List<ChannelPair>
         get() = ChannelPair.pairsFor(selectedInput?.maxChannelCount ?: 2)
@@ -246,11 +258,13 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        // Any USB audio device on the bus while a non-USB input is selected almost always means the
-        // routing did not take — not just Pioneer hardware, which is all the vendor-id list knows
-        // about. Warn once and let the second tap through: some mixers never expose a USB capture
-        // endpoint at all, and for that user a room recording beats no recording.
-        if (!input.isUsb && state.diagnostics.busDevices.isNotEmpty() && !wrongInputConfirmed) {
+        // A USB *audio* device on the bus while a non-USB input is selected usually means routing
+        // did not take. Gated on audio-capable hardware, not on the bus being non-empty: with the
+        // broad scan that landed with the diagnostics panel, a hub or a charger dock made this fire
+        // on every single REC press forever. Warn once and let the second tap through — Pioneer
+        // mixers never expose a USB capture endpoint at all, and for that user a room recording
+        // beats no recording.
+        if (!input.isUsb && state.diagnostics.audioCapableDevices.isNotEmpty() && !wrongInputConfirmed) {
             wrongInputConfirmed = true
             _message.value = "\"${input.productName}\" is not a USB input. " +
                 "Tap REC again to record from it anyway."
