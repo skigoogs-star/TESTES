@@ -2,7 +2,6 @@ package com.deckrec.usb
 
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
-import android.os.Build
 
 /**
  * A snapshot of an audio capture endpoint the platform is willing to record from.
@@ -77,12 +76,20 @@ data class AudioInput(
     companion object {
         val DEFAULT_RATES = listOf(44100, 48000, 88200, 96000)
 
-        /** Endpoints the platform reports but will not let a normal app open. */
-        val UNRECORDABLE_TYPES = setOfNotNull(
+        /**
+         * Endpoints the platform reports but will not let a normal app open.
+         *
+         * The echo reference (type 28) has no public constant — it is a system API — so it is
+         * matched by value rather than by name.
+         */
+        const val TYPE_ECHO_REFERENCE = 28
+
+        val UNRECORDABLE_TYPES = setOf(
             AudioDeviceInfo.TYPE_TELEPHONY,
             AudioDeviceInfo.TYPE_REMOTE_SUBMIX,
             AudioDeviceInfo.TYPE_FM_TUNER,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AudioDeviceInfo.TYPE_ECHO_REFERENCE else null,
+            AudioDeviceInfo.TYPE_TV_TUNER,
+            TYPE_ECHO_REFERENCE,
         )
     }
 }
