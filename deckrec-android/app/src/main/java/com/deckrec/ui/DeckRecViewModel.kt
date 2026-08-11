@@ -1,7 +1,10 @@
 package com.deckrec.ui
 
+import android.Manifest
 import android.app.Application
 import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.deckrec.DeckRecApp
@@ -38,6 +41,7 @@ data class RecordUiState(
     val progress: RecordingProgress = RecordingProgress(),
     val markers: List<Marker> = emptyList(),
     val remainingSeconds: Long = 0,
+    val notice: String? = null,
 ) {
     val isRecording: Boolean get() = state is RecorderState.Recording
     val isPaused: Boolean get() = (state as? RecorderState.Recording)?.paused == true
@@ -73,8 +77,14 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         scanner.inputs,
         scanner.usbAudioHardware,
         settingsStore.settings,
-        combine(engine.state, engine.levels, engine.progress, engine.markers) { state, levels, progress, markers ->
-            RecorderSnapshot(state, levels, progress, markers)
+        combine(
+            engine.state,
+            engine.levels,
+            engine.progress,
+            engine.markers,
+            engine.notice,
+        ) { state, levels, progress, markers, notice ->
+            RecorderSnapshot(state, levels, progress, markers, notice)
         },
         _remainingSeconds,
     ) { inputs, hardware, settings, snapshot, remaining ->
@@ -91,6 +101,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
             progress = snapshot.progress,
             markers = snapshot.markers,
             remainingSeconds = remaining,
+            notice = snapshot.notice,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecordUiState())
 
@@ -99,12 +110,14 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         val levels: Levels,
         val progress: RecordingProgress,
         val markers: List<Marker>,
+        val notice: String?,
     )
 
     init {
-        engine.onPartCompleted = { store.refresh() }
         refreshCapacity()
     }
+
+    fun consumeNotice() = engine.consumeNotice()
 
     fun refreshDevices() {
         scanner.refresh()
@@ -126,12 +139,27 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     // ---- Recording transport -------------------------------------------------------------
 
     fun startRecording() {
+        // Check before the service is started, not after. Starting a microphone-typed foreground
+        // service without RECORD_AUDIO is a SecurityException on Android 14+ — a hard crash, not
+        // a failed recording.
+        if (ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            _message.value =
+                "Microphone permission is required — Android gates USB audio input behind it too."
+            return
+        }
+
         val state = uiState.value
         val input = state.selectedInput
         if (input == null) {
             _message.value = "No audio input available. Connect your mixer over USB and try again."
             return
         }
+
+        // Clear any terminal state from a previous session before the service subscribes to it.
+        engine.clearTerminalState()
+
         val settings = state.settings
         val config = settings.toRecorderConfig(
             deviceId = input.id,
@@ -220,28 +248,64 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
     fun recording(id: String): RecordingMeta? = store.find(id)
 
-    fun updateRecording(meta: RecordingMeta) = store.save(meta)
+    /**
+     * Library writes all go through here so they land on the IO dispatcher. Each save rescans and
+     * re-parses the whole directory, which janks the frame it runs on if done inline.
+     */
+    private fun editLibrary(block: () -> Unit) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { block() }
+        }
+    }
 
-    fun renameRecording(meta: RecordingMeta, title: String): RecordingMeta = store.rename(meta, title)
+    fun updateRecording(meta: RecordingMeta) = editLibrary { store.save(meta) }
+
+    /** Applies the whole details form in one pass: rename the file, then persist the metadata. */
+    fun saveDetails(
+        meta: RecordingMeta,
+        title: String,
+        artist: String,
+        genre: String,
+        tags: String,
+        notes: String,
+    ) {
+        editLibrary {
+            val renamed = if (title.isNotBlank() && title != meta.title) {
+                store.rename(meta, title)
+            } else {
+                meta
+            }
+            store.save(
+                renamed.copy(
+                    title = title,
+                    artist = artist,
+                    genre = genre,
+                    tags = tags.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                    notes = notes,
+                )
+            )
+        }
+        _message.value = "Details saved"
+    }
 
     fun deleteRecording(meta: RecordingMeta) {
-        store.delete(meta)
+        editLibrary { store.delete(meta) }
         _message.value = "Deleted \"${meta.displayTitle()}\""
         refreshCapacity()
     }
 
-    fun addMarkerTo(meta: RecordingMeta, positionMs: Long) {
+    fun addMarkerTo(meta: RecordingMeta, positionMs: Long) = editLibrary {
         val marker = Marker(UUID.randomUUID().toString(), positionMs, "", automatic = false)
         store.save(meta.copy(markers = (meta.markers + marker).sortedBy { it.positionMs }))
     }
 
-    fun updateMarker(meta: RecordingMeta, marker: Marker) {
+    fun updateMarker(meta: RecordingMeta, marker: Marker) = editLibrary {
         val markers = meta.markers.map { if (it.id == marker.id) marker else it }
             .sortedBy { it.positionMs }
         store.save(meta.copy(markers = markers))
     }
 
-    fun deleteMarker(meta: RecordingMeta, marker: Marker) {
+    fun deleteMarker(meta: RecordingMeta, marker: Marker) = editLibrary {
         store.save(meta.copy(markers = meta.markers.filterNot { it.id == marker.id }))
     }
 

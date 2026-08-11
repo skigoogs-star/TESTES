@@ -197,6 +197,17 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
                 fontSize = 12.sp,
             )
         }
+
+        // Surfaced rather than logged: silently recording the wrong channel pair for two hours is
+        // exactly the kind of failure a DJ only discovers when it is far too late to redo.
+        state.notice?.let { notice ->
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = notice,
+                color = DeckColors.MeterMid,
+                fontSize = 12.sp,
+            )
+        }
     }
 }
 

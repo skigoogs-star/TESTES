@@ -349,23 +349,7 @@ private fun MetadataCard(meta: RecordingMeta, viewModel: DeckRecViewModel) {
         SelectableChip(
             text = "Save details",
             selected = true,
-            onClick = {
-                val renamed = if (title.isNotBlank() && title != meta.title) {
-                    viewModel.renameRecording(meta, title)
-                } else {
-                    meta
-                }
-                viewModel.updateRecording(
-                    renamed.copy(
-                        title = title,
-                        artist = artist,
-                        genre = genre,
-                        tags = tags.split(',').map { it.trim() }.filter { it.isNotEmpty() },
-                        notes = notes,
-                    )
-                )
-                viewModel.showMessage("Details saved")
-            },
+            onClick = { viewModel.saveDetails(meta, title, artist, genre, tags, notes) },
         )
     }
 }

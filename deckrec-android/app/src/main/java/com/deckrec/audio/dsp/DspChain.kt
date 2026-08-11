@@ -57,8 +57,15 @@ class DspChain(private val sampleRate: Int) {
         currentGain = targetGain
     }
 
-    /** Latency the chain adds, in frames. Used to keep marker positions honest. */
-    fun latencyFrames(): Int = if (limiterEnabled) limiter.latencyFrames() else 0
+    /**
+     * Latency the chain adds, in frames. Constant regardless of the limiter switch, because the
+     * limiter's delay line runs whether or not it is imposing gain.
+     *
+     * Markers do not need correcting for it: the transition detector and the meters both look at
+     * the buffer *after* this chain has run, so they share the file's timeline rather than the
+     * capture timeline.
+     */
+    fun latencyFrames(): Int = limiter.latencyFrames()
 
     /**
      * Processes an interleaved stereo block in place and returns the meter snapshot for it.
@@ -67,11 +74,10 @@ class DspChain(private val sampleRate: Int) {
         applyGain(buffer, frames)
         subBass.process(buffer, frames)
         loudness.process(buffer, frames)
-        if (limiterEnabled) {
-            limiter.process(buffer, frames)
-        } else {
-            limiter.reset()
-        }
+        // The limiter always runs its delay line and only the gain is switched, so toggling it
+        // mid-set changes neither the latency nor the alignment. Resetting it instead would splice
+        // a few milliseconds of silence into the recording every time it was switched back on.
+        limiter.process(buffer, frames, applyGain = limiterEnabled)
         return meter.measure(
             buffer,
             frames,

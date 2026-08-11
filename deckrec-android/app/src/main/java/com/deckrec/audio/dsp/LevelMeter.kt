@@ -79,18 +79,19 @@ class LevelMeter(sampleRate: Int) {
             holdL = blockPeakL
             holdFramesRemainingL = holdFrames
         } else {
-            holdFramesRemainingL -= frames
+            holdFramesRemainingL = countDown(holdFramesRemainingL, frames)
             if (holdFramesRemainingL <= 0) holdL = decayToward(holdL, 0f, frames)
         }
         if (blockPeakR >= holdR) {
             holdR = blockPeakR
             holdFramesRemainingR = holdFrames
         } else {
-            holdFramesRemainingR -= frames
+            holdFramesRemainingR = countDown(holdFramesRemainingR, frames)
             if (holdFramesRemainingR <= 0) holdR = decayToward(holdR, 0f, frames)
         }
 
-        if (clipped) clipFramesRemaining = clipHoldFrames else clipFramesRemaining -= frames
+        clipFramesRemaining =
+            if (clipped) clipHoldFrames else countDown(clipFramesRemaining, frames)
 
         return Levels(
             peakDbL = BrickwallLimiter.linearToDb(peakL),
@@ -103,6 +104,16 @@ class LevelMeter(sampleRate: Int) {
             limiterReductionDb = limiterReductionDb,
         )
     }
+
+    /**
+     * Decrements a hold counter, clamped at zero.
+     *
+     * Left to run free these underflow after about 12 hours of silence at 48 kHz and wrap to a
+     * large positive value — which, for an app whose whole job is unattended overnight recording,
+     * means the clip light latching on over a clean recording.
+     */
+    private fun countDown(remaining: Int, frames: Int): Int =
+        if (remaining <= frames) 0 else remaining - frames
 
     private fun decayToward(current: Float, target: Float, frames: Int): Float {
         if (target >= current) return target

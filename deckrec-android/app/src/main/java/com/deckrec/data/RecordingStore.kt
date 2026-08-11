@@ -45,7 +45,9 @@ class RecordingStore(private val context: Context) {
     private val metaDir: File by lazy { File(recordingsDir, "meta").apply { mkdirs() } }
 
     val artworkDir: File by lazy {
-        File(context.getExternalFilesDir(null), "artwork").apply { mkdirs() }
+        // getExternalFilesDir can return null; File(null, "artwork") silently resolves to /artwork.
+        val base = context.getExternalFilesDir(null) ?: context.filesDir
+        File(base, "artwork").apply { mkdirs() }
     }
 
     private val _recordings = MutableStateFlow<List<RecordingMeta>>(emptyList())
@@ -74,11 +76,18 @@ class RecordingStore(private val context: Context) {
         )
     }
 
-    fun save(meta: RecordingMeta) {
+    /**
+     * Writes the sidecar for [meta].
+     *
+     * [refreshLibrary] rescans and re-parses every recording in the directory, which is far too
+     * heavy for callers on a time-critical thread — the recorder passes false and lets the UI
+     * refresh on its own schedule.
+     */
+    fun save(meta: RecordingMeta, refreshLibrary: Boolean = true) {
         runCatching {
             File(metaDir, "${meta.id}.json").writeText(json.encodeToString(RecordingMeta.serializer(), meta))
         }
-        refresh()
+        if (refreshLibrary) refresh()
     }
 
     fun delete(meta: RecordingMeta) {
@@ -227,6 +236,10 @@ class RecordingStore(private val context: Context) {
         "${context.packageName}.fileprovider",
         audioFile(meta),
     )
+
+    /** True when external storage was unavailable and recordings live in internal storage. */
+    val usingInternalFallback: Boolean
+        get() = recordingsDir.absolutePath.startsWith(context.filesDir.absolutePath)
 
     fun shareIntent(meta: RecordingMeta): Intent {
         val uri = shareUri(meta)

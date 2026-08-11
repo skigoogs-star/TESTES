@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.util.Log
 import com.deckrec.data.Marker
 import java.io.File
 import java.nio.ByteBuffer
@@ -11,6 +12,11 @@ import java.nio.ByteOrder
 
 /**
  * AAC-LC encoder writing an MPEG-4 (.m4a) container via [MediaCodec] and [MediaMuxer].
+ *
+ * Every loop that waits on the codec is bounded by a deadline. An encoder that stops handing back
+ * buffers is a real failure mode on stressed devices, and an unbounded wait here would hang the
+ * stop button forever — leaving the muxer un-stopped and the file without a `moov` atom, which is
+ * to say unplayable by anything.
  *
  * Markers are not embedded here — MPEG-4 has no cue-point atom that DJ software reads — so they
  * live in the JSON sidecar alongside the file, which is where the app reads them from anyway.
@@ -30,6 +36,7 @@ class AacSink(
     private var muxerStarted = false
     private var pcmScratch = ByteArray(0)
     private var encodedBytes = 0L
+    private var muxedSamples = 0L
     private var finished = false
 
     override var framesWritten: Long = 0L
@@ -66,21 +73,30 @@ class AacSink(
         }
 
         var offset = 0
+        val deadline = System.nanoTime() + WRITE_TIMEOUT_NANOS
         while (offset < needed) {
+            if (System.nanoTime() > deadline) {
+                Log.w(TAG, "Encoder stalled; dropped ${needed - offset} bytes of this block")
+                return
+            }
             val inputIndex = codec.dequeueInputBuffer(TIMEOUT_US)
             if (inputIndex < 0) {
                 drain(endOfStream = false)
                 continue
             }
-            val inputBuffer: ByteBuffer = codec.getInputBuffer(inputIndex) ?: continue
+            val inputBuffer: ByteBuffer? = codec.getInputBuffer(inputIndex)
+            if (inputBuffer == null) {
+                // Hand the index straight back rather than leaking it.
+                codec.queueInputBuffer(inputIndex, 0, 0, presentationTimeUs(), 0)
+                continue
+            }
             inputBuffer.clear()
             inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
             val chunk = minOf(inputBuffer.remaining(), needed - offset)
             inputBuffer.put(pcmScratch, offset, chunk)
 
             val framesInChunk = chunk / (2 * channels)
-            val presentationTimeUs = framesWritten * 1_000_000L / sampleRate
-            codec.queueInputBuffer(inputIndex, 0, chunk, presentationTimeUs, 0)
+            codec.queueInputBuffer(inputIndex, 0, chunk, presentationTimeUs(), 0)
 
             framesWritten += framesInChunk
             offset += chunk
@@ -88,17 +104,26 @@ class AacSink(
         }
     }
 
-    override fun finish(markers: List<Marker>) {
-        if (finished) return
+    override fun finish(markers: List<Marker>): Boolean {
+        if (finished) return muxedSamples > 0
         finished = true
         try {
-            signalEndOfStream()
-            drain(endOfStream = true)
+            val queued = signalEndOfStream()
+            drain(endOfStream = queued)
         } catch (e: Exception) {
-            // Fall through to releasing everything; a partial file still beats no file.
+            Log.w(TAG, "Failed to drain the encoder cleanly", e)
         } finally {
             release()
         }
+
+        // A muxer that was never started, or started but never given a sample, leaves a file with
+        // no moov atom. Better no file than one the library lists and no player will open.
+        val usable = muxedSamples > 0 && file.length() > 0
+        if (!usable) {
+            Log.w(TAG, "AAC encoder produced no samples; discarding ${file.name}")
+            file.delete()
+        }
+        return usable
     }
 
     override fun abort() {
@@ -110,28 +135,36 @@ class AacSink(
         }
     }
 
-    private fun signalEndOfStream() {
-        var attempts = 0
-        while (attempts < END_OF_STREAM_ATTEMPTS) {
+    private fun presentationTimeUs(): Long = framesWritten * 1_000_000L / sampleRate
+
+    /** @return true if the end-of-stream buffer was actually queued. */
+    private fun signalEndOfStream(): Boolean {
+        val deadline = System.nanoTime() + EOS_TIMEOUT_NANOS
+        while (System.nanoTime() < deadline) {
             val inputIndex = codec.dequeueInputBuffer(TIMEOUT_US)
             if (inputIndex >= 0) {
-                val presentationTimeUs = framesWritten * 1_000_000L / sampleRate
                 codec.queueInputBuffer(
                     inputIndex,
                     0,
                     0,
-                    presentationTimeUs,
+                    presentationTimeUs(),
                     MediaCodec.BUFFER_FLAG_END_OF_STREAM,
                 )
-                return
+                return true
             }
             drain(endOfStream = false)
-            attempts++
         }
+        Log.w(TAG, "Encoder never accepted the end-of-stream buffer")
+        return false
     }
 
     private fun drain(endOfStream: Boolean) {
+        val deadline = System.nanoTime() + DRAIN_TIMEOUT_NANOS
         while (true) {
+            if (endOfStream && System.nanoTime() > deadline) {
+                Log.w(TAG, "Gave up waiting for end-of-stream from the encoder")
+                return
+            }
             val outputIndex = codec.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
             when {
                 outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
@@ -156,6 +189,7 @@ class AacSink(
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
                         muxer.writeSampleData(trackIndex, outputBuffer, bufferInfo)
                         encodedBytes += bufferInfo.size
+                        muxedSamples++
                     }
                     codec.releaseOutputBuffer(outputIndex, false)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
@@ -167,14 +201,19 @@ class AacSink(
     private fun release() {
         runCatching { codec.stop() }
         runCatching { codec.release() }
+        // stop() throws if the muxer was started but never written to; that is exactly the case
+        // the caller is told about via finish()'s return value.
         if (muxerStarted) runCatching { muxer.stop() }
         runCatching { muxer.release() }
     }
 
     private companion object {
+        const val TAG = "AacSink"
         const val MIME_TYPE = MediaFormat.MIMETYPE_AUDIO_AAC
         const val TIMEOUT_US = 10_000L
         const val MAX_INPUT_SIZE = 32 * 1024
-        const val END_OF_STREAM_ATTEMPTS = 50
+        const val EOS_TIMEOUT_NANOS = 2_000_000_000L
+        const val DRAIN_TIMEOUT_NANOS = 3_000_000_000L
+        const val WRITE_TIMEOUT_NANOS = 2_000_000_000L
     }
 }

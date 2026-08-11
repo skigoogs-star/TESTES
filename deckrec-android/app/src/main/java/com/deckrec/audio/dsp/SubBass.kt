@@ -1,5 +1,6 @@
 package com.deckrec.audio.dsp
 
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.exp
 
@@ -37,7 +38,11 @@ class SubBass(private val sampleRate: Int) {
     private var flipFlop = 1f
     private var lastCrossingFrame = 0L
     private var frameCounter = 0L
-    private var halfPeriodFrames = 0f
+    private var lockedPeriodFrames = 0f
+
+    private var dcPreviousIn = 0f
+    private var dcPreviousOut = 0f
+    private val dcCoefficient = 1f - (2.0 * PI * DC_BLOCK_HZ / sampleRate).toFloat()
 
     init {
         bandLow.lowPass(BAND_HIGH_HZ, 0.707f, sampleRate)
@@ -54,9 +59,11 @@ class SubBass(private val sampleRate: Int) {
         envelope = 0f
         previousSample = 0f
         flipFlop = 1f
-        halfPeriodFrames = 0f
+        lockedPeriodFrames = 0f
         frameCounter = 0
         lastCrossingFrame = 0
+        dcPreviousIn = 0f
+        dcPreviousOut = 0f
     }
 
     fun process(buffer: FloatArray, frames: Int) {
@@ -81,21 +88,29 @@ class SubBass(private val sampleRate: Int) {
             if (previousSample <= 0f && banded > 0f) {
                 val period = (frameCounter - lastCrossingFrame).toFloat()
                 if (period in MIN_PERIOD_FRAMES..MAX_PERIOD_FRAMES) {
-                    halfPeriodFrames = period
+                    lockedPeriodFrames = period
                     flipFlop = -flipFlop
                 }
                 lastCrossingFrame = frameCounter
             }
             previousSample = banded
 
-            var sub = 0f
-            if (envelope > gateLinear && halfPeriodFrames > 0f) {
-                // Smoothing the square turns it into something close to a sine, so it adds weight
-                // instead of the buzz a raw divider would inject.
-                sub = subSmoother.processSample(0, flipFlop) * envelope * synthLevel
-            } else {
-                subSmoother.processSample(0, 0f)
+            // Lock is lost when the band stops crossing zero: the DJ killed the bass, the track
+            // ended, or the content moved outside the divider's range. The square is held between
+            // crossings, and a held square through a lowpass is DC — without this the sub emits a
+            // half-second decaying DC step into both channels on every bass cut.
+            if ((frameCounter - lastCrossingFrame).toFloat() > MAX_PERIOD_FRAMES) {
+                lockedPeriodFrames = 0f
             }
+
+            // Smoothing the square turns it into something close to a sine, so it adds weight
+            // instead of the buzz a raw divider would inject. Feeding zero rather than skipping
+            // the filter lets it decay rather than jump when the lock drops out.
+            val locked = lockedPeriodFrames > 0f && envelope > gateLinear
+            val smoothed = subSmoother.processSample(0, if (locked) flipFlop else 0f)
+            // A divider whose half-cycles are not perfectly symmetrical still leaves a DC term,
+            // and nothing downstream of here removes it.
+            val sub = blockDc(smoothed * envelope * synthLevel)
 
             buffer[i] += sub
             buffer[i + 1] += sub
@@ -109,6 +124,14 @@ class SubBass(private val sampleRate: Int) {
     private fun onePoleCoefficient(seconds: Float): Float =
         (1.0 - exp(-1.0 / (seconds.toDouble() * sampleRate))).toFloat()
 
+    /** First-order DC blocker: y[n] = x[n] - x[n-1] + R*y[n-1]. */
+    private fun blockDc(x: Float): Float {
+        val y = x - dcPreviousIn + dcCoefficient * dcPreviousOut
+        dcPreviousIn = x
+        dcPreviousOut = y
+        return y
+    }
+
     private val MIN_PERIOD_FRAMES: Float get() = sampleRate / BAND_HIGH_HZ
     private val MAX_PERIOD_FRAMES: Float get() = sampleRate / BAND_LOW_HZ
 
@@ -120,6 +143,7 @@ class SubBass(private val sampleRate: Int) {
         const val MAX_SHELF_DB = 5.5f
         const val SYNTH_LEVEL = 0.55f
         const val GATE_DB = -46f
+        const val DC_BLOCK_HZ = 12f
         const val CHANNELS = 2
     }
 }

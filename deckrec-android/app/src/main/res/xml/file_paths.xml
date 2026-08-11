@@ -6,4 +6,15 @@
     <external-files-path
         name="artwork"
         path="artwork/" />
+    <!--
+      RecordingStore falls back to internal storage when external storage is unavailable. Without
+      these entries sharing from that fallback throws IllegalArgumentException — precisely in the
+      situation the fallback exists to cover.
+    -->
+    <files-path
+        name="internal_recordings"
+        path="Music/" />
+    <files-path
+        name="internal_artwork"
+        path="artwork/" />
 </paths>

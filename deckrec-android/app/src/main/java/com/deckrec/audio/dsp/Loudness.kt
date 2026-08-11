@@ -54,14 +54,19 @@ class Loudness(private val sampleRate: Int) {
 
             val levelDb = BrickwallLimiter.linearToDb(envelope)
             val over = levelDb - thresholdDb
-            val reductionDb = if (over <= 0f) {
-                0f
-            } else if (over < KNEE_DB) {
-                // Quadratic knee: the ratio eases in over the first KNEE_DB above threshold.
-                val kneeFactor = over / KNEE_DB
-                (over - over / ratio) * kneeFactor * kneeFactor
-            } else {
-                over - over / ratio
+            val slope = 1f - 1f / ratio
+            // Standard quadratic soft knee straddling the threshold. Both the curve and its slope
+            // are continuous at each end of the knee, which matters: a knee that is only
+            // value-continuous has a kink where the gain slope jumps, and one whose slope exceeds
+            // the ratio inside the knee actually turns the transfer curve backwards — louder in,
+            // quieter out — which is heard as pumping on sustained bass.
+            val reductionDb = when {
+                over <= -HALF_KNEE_DB -> 0f
+                over >= HALF_KNEE_DB -> slope * over
+                else -> {
+                    val x = over + HALF_KNEE_DB
+                    slope * x * x / (2f * KNEE_DB)
+                }
             }
 
             val gain = BrickwallLimiter.dbToLinear(-reductionDb) * makeupLinear
@@ -90,6 +95,7 @@ class Loudness(private val sampleRate: Int) {
         const val ATTACK_SECONDS = 0.008f
         const val RELEASE_SECONDS = 0.18f
         const val KNEE_DB = 6f
+        const val HALF_KNEE_DB = KNEE_DB / 2f
         const val CHANNELS = 2
     }
 }

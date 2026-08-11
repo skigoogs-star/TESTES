@@ -70,7 +70,7 @@ class WavSink(
         framesWritten += frames
     }
 
-    override fun finish(markers: List<Marker>) {
+    override fun finish(markers: List<Marker>): Boolean {
         try {
             raf.seek(HEADER_BYTES.toLong() + dataBytes)
             val extraBytes = writeMarkerChunks(markers)
@@ -78,6 +78,7 @@ class WavSink(
         } finally {
             raf.close()
         }
+        return dataBytes > 0
     }
 
     override fun abort() {
@@ -222,6 +223,21 @@ class WavSink(
             }
         }.getOrNull()
 
+        /**
+         * The raw value of the data-chunk size field, before [readHeader]'s fallback to the file
+         * length. Zero (or nonsense) here is what marks a file whose writer never finalised it.
+         */
+        private fun declaredDataBytes(file: File): Long? = runCatching {
+            RandomAccessFile(file, "r").use { raf ->
+                if (raf.length() < HEADER_BYTES) return null
+                val header = ByteArray(HEADER_BYTES)
+                raf.readFully(header)
+                if (String(header, 0, 4, Charsets.US_ASCII) != "RIFF") return null
+                if (String(header, 8, 4, Charsets.US_ASCII) != "WAVE") return null
+                readIntLe(header, 40).toLong() and 0xFFFFFFFFL
+            }
+        }.getOrNull()
+
         private fun readIntLe(bytes: ByteArray, offset: Int): Int =
             (bytes[offset].toInt() and 0xFF) or
                 ((bytes[offset + 1].toInt() and 0xFF) shl 8) or
@@ -234,9 +250,22 @@ class WavSink(
         /**
          * Patches the header of a WAV whose writer was killed before [finish] ran, using the file
          * length to work out how much audio actually made it to disk.
+         *
+         * Refuses to touch a file that was finalised properly. A finished recording carries its
+         * markers in `cue `/`LIST` chunks *after* the data chunk, and rewriting the data size to
+         * "everything after the header" would swallow those chunks into the audio — the cue points
+         * would vanish from every DAW and the marker bytes would decode as a burst of noise at the
+         * end of the set.
+         *
+         * @return true if the file needed repair and was repaired.
          */
         fun repairTruncated(file: File): Boolean {
             if (!file.isFile || file.length() <= HEADER_BYTES) return false
+            // A declared data size that is present and plausible means finish() ran. Leave it be.
+            val existing = readHeader(file) ?: return false
+            val declared = declaredDataBytes(file) ?: return false
+            if (declared in 1..(file.length() - HEADER_BYTES)) return false
+            if (existing.channels <= 0 || existing.sampleRate <= 0) return false
             return try {
                 RandomAccessFile(file, "rw").use { raf ->
                     val dataBytes = raf.length() - HEADER_BYTES

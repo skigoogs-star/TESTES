@@ -8,6 +8,10 @@ import com.deckrec.audio.RecordingEngine
 import com.deckrec.data.RecordingStore
 import com.deckrec.data.SettingsStore
 import com.deckrec.usb.UsbAudioScanner
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * Holds the pieces that must outlive any one screen.
@@ -30,18 +34,33 @@ class DeckRecApp : Application() {
     lateinit var recordingEngine: RecordingEngine
         private set
 
+    /** Application-lifetime scope for library bookkeeping that must not block a caller. */
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate() {
         super.onCreate()
         instance = this
 
         settingsStore = SettingsStore(this)
-        recordingStore = RecordingStore(this).apply {
-            // Adopt anything a previous crash left behind before the library is first read.
-            recoverOrphans()
-            refresh()
-        }
+        recordingStore = RecordingStore(this)
         usbAudioScanner = UsbAudioScanner(this).apply { start() }
         recordingEngine = RecordingEngine(this, usbAudioScanner, recordingStore)
+
+        // Scanning the library means a directory walk, a JSON parse per recording, WAV header
+        // repairs and possibly a MediaMetadataRetriever per orphan. Doing that inline here delays
+        // every cold start — including one triggered by a notification action — and ANRs on a
+        // large library. Nothing on screen needs it before the first frame.
+        ioScope.launch {
+            recordingStore.recoverOrphans()
+            recordingStore.refresh()
+        }
+
+        // Owned by the Application rather than the ViewModel: this outlives any screen, and a
+        // lambda holding a ViewModel here would keep it alive for the life of the process. It also
+        // gets the library rescan off the writer thread, which is still busy with the next part.
+        recordingEngine.onPartCompleted = {
+            ioScope.launch { recordingStore.refresh() }
+        }
 
         createNotificationChannel()
     }
