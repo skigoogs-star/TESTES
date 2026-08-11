@@ -94,7 +94,93 @@ class RecordingEngine(
     @Volatile
     private var pendingManualMarker = false
 
+    private val monitoring = AtomicBoolean(false)
+    private val monitorStop = AtomicBoolean(false)
+
+    @Volatile
+    private var monitorThread: Thread? = null
+
+    private val _isMonitoring = MutableStateFlow(false)
+    val isMonitoring: StateFlow<Boolean> = _isMonitoring.asStateFlow()
+
     val isRecording: Boolean get() = running.get()
+
+    /**
+     * Opens the input and runs the record bus without writing anything.
+     *
+     * Without this the meters are dead until REC is pressed, which makes the two things you must
+     * get right before a set — that the selected channel pair really is the master bus, and that
+     * the gain is staged sensibly — verifiable only by recording, watching, stopping and trying
+     * again. Monitoring runs only while the record screen is on top, so it never holds the
+     * microphone in the background.
+     */
+    fun startMonitor(config: RecorderConfig): Boolean {
+        if (running.get()) return false
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            return false
+        }
+        if (!monitoring.compareAndSet(false, true)) return false
+
+        monitorStop.set(false)
+        val worker = Thread({ runMonitor(config) }, "DeckRec-Monitor")
+        worker.priority = Thread.MAX_PRIORITY
+        monitorThread = worker
+        worker.start()
+        return true
+    }
+
+    /** Blocks briefly while the monitor releases the input. Never call from the main thread. */
+    fun stopMonitor() {
+        monitorStop.set(true)
+        monitorThread?.let { runCatching { it.join(MONITOR_JOIN_MS) } }
+        monitorThread = null
+    }
+
+    private fun runMonitor(config: RecorderConfig) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        var capture: Capture? = null
+        try {
+            capture = openCapture(config) ?: return
+            val chain = DspChain(config.sampleRate).apply {
+                inputGainDb = config.inputGainDb
+                subBassAmount = config.subBassAmount
+                loudnessAmount = config.loudnessAmount
+                limiterEnabled = config.limiterEnabled
+                transitionDetector.enabled = false
+            }
+            dsp = chain
+
+            capture.record.startRecording()
+            if (capture.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) return
+            _isMonitoring.value = true
+
+            val framesPerRead = capture.framesPerRead
+            val channels = capture.deliveredChannels
+            val rawFloats = if (capture.isFloat) FloatArray(framesPerRead * channels) else FloatArray(0)
+            val rawShorts = if (capture.isFloat) ShortArray(0) else ShortArray(framesPerRead * channels)
+            val stereo = FloatArray(framesPerRead * 2)
+
+            while (!monitorStop.get() && !running.get()) {
+                val framesRead = readFrames(capture, rawFloats, rawShorts, framesPerRead)
+                if (framesRead <= 0) break
+                deinterleave(capture, rawFloats, rawShorts, stereo, framesRead)
+                _levels.value = chain.process(stereo, framesRead)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Monitoring stopped: ${e.message}")
+        } finally {
+            runCatching { capture?.record?.stop() }
+            runCatching { capture?.record?.release() }
+            if (!running.get()) {
+                dsp = null
+                _levels.value = Levels()
+            }
+            _isMonitoring.value = false
+            monitoring.set(false)
+        }
+    }
 
     /** File names the engine currently has open, so the library never adopts a live recording. */
     fun openFileNames(): Set<String> = session?.openFileNames() ?: emptySet()
@@ -103,6 +189,9 @@ class RecordingEngine(
         // compareAndSet, not get-then-set: a check-then-act here lets two callers both start a
         // capture thread and fight over the same output files.
         if (!running.compareAndSet(false, true)) return false
+
+        // The monitor owns the input until it lets go; recording cannot open it underneath.
+        stopMonitor()
 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
@@ -340,7 +429,11 @@ class RecordingEngine(
             _state.value = RecorderState.Stopping
         } catch (e: Throwable) {
             Log.e(TAG, "Capture failed", e)
-            _state.value = RecorderState.Failed(e.message ?: "Recording failed")
+            // Recorded, not published. A terminal state announced while isRecording is still true
+            // is unobservable to the service — it declines to shut down mid-recording, and by the
+            // time the flag clears there is no further emission to react to, so the foreground
+            // service and its notification would be pinned for good.
+            live.captureFailure = e.message ?: "Recording failed"
         } finally {
             runCatching { capture?.record?.stop() }
             runCatching { capture?.record?.release() }
@@ -353,11 +446,17 @@ class RecordingEngine(
             _levels.value = Levels()
             running.set(false)
 
-            val failure = live.failure
-            if (failure != null) {
-                _state.value = RecorderState.Failed(failure)
-            } else if (_state.value !is RecorderState.Failed) {
-                _state.value = RecorderState.Idle
+            // Terminal state goes out last, and only for the live session: a previous session
+            // winding down must not stamp Idle over a new one's Starting.
+            if (session === live) {
+                val failure = live.captureFailure ?: live.failure
+                _state.value = if (failure != null) {
+                    RecorderState.Failed(failure)
+                } else {
+                    RecorderState.Idle
+                }
+                // Nothing reads the session once it is over, and its queues are megabytes.
+                session = null
             }
         }
     }
@@ -427,8 +526,11 @@ class RecordingEngine(
 
                 val part = current!!
                 part.sink.write(block.data, block.frames)
-                part.peaks.write(block.data, block.frames)
+                // Counted as soon as the audio is in the file. Counting after the waveform write
+                // would let a peaks failure on the very first block leave frames at zero, and the
+                // zero-frame path deletes the file.
                 part.frames += block.frames
+                part.peaks.write(block.data, block.frames)
                 free.offer(block)
 
                 publish(live) { it.copy(sizeBytes = part.sink.bytesOnDisk, partIndex = part.index) }
@@ -487,7 +589,11 @@ class RecordingEngine(
         val usable = runCatching { part.sink.finish(partMarkers) }.getOrDefault(false)
         live.openPart = null
 
-        if (part.frames == 0L) {
+        val fileLength = part.target.audioFile.length()
+        // Deleting is gated on the file being empty as well as the counter reading zero: a write
+        // that threw partway still put audio on disk, and "recorded audio is never deleted" has to
+        // hold even when the bookkeeping disagrees with the filesystem.
+        if (part.frames == 0L && fileLength <= WavSink.HEADER_BYTES) {
             // Nothing was ever captured, so there is no audio to lose — and leaving the stub behind
             // would have the library adopt it as a phantom "recovered" recording at next launch.
             runCatching { part.target.peaksFile.delete() }
@@ -760,7 +866,12 @@ class RecordingEngine(
      */
     private class Session(val config: RecorderConfig) {
         @Volatile var captureFinished = false
+
+        /** Set by the writer thread. */
         @Volatile var failure: String? = null
+
+        /** Set by the capture thread; published only once the session is fully wound down. */
+        @Volatile var captureFailure: String? = null
 
         /** Frames that actually reached the writer — the timeline the file and markers share. */
         @Volatile var frames = 0L
@@ -803,6 +914,7 @@ class RecordingEngine(
         const val WRITER_JOIN_MS = 10_000L
         const val WRITER_POLL_MS = 50L
         const val ENQUEUE_WAIT_MS = 500L
+        const val MONITOR_JOIN_MS = 3000L
 
         /** Seconds of audio the hardware buffer holds. */
         const val CAPTURE_BUFFER_SECONDS = 2

@@ -30,6 +30,9 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.deckrec.audio.RecorderState
 import com.deckrec.audio.dsp.BrickwallLimiter
@@ -63,6 +67,13 @@ fun RecordScreen(
     onOpenSettings: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Monitoring is tied to this screen being on top: the input is open for metering only while
+    // the DJ can see the meters, so the microphone is never held in the background.
+    LifecycleResumeEffect(state.selectedInput?.id, state.isRecording) {
+        if (!state.isRecording) viewModel.startMonitoring()
+        onPauseOrDispose { viewModel.stopMonitoring() }
+    }
 
     Column(
         modifier = Modifier
@@ -257,38 +268,73 @@ private fun TimeCard(state: RecordUiState) {
 
 @Composable
 private fun MeterCard(state: RecordUiState) {
+    val title = when {
+        state.isRecording -> "RECORD LEVEL"
+        state.monitoring -> "INPUT LEVEL · MONITORING"
+        else -> "INPUT LEVEL"
+    }
     SectionCard(
-        title = "RECORD LEVEL",
+        title = title,
         trailing = { ClipIndicator(clipping = state.levels.clipping) },
     ) {
         StereoLevelMeter(levels = state.levels)
         Spacer(Modifier.height(10.dp))
         GainReductionMeter(reductionDb = state.levels.limiterReductionDb)
+        if (!state.isRecording) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (state.monitoring) {
+                    "Live — play something and set your gain before you hit REC."
+                } else {
+                    "Select an input to see levels."
+                },
+                color = DeckColors.TextSecondary,
+                fontSize = 11.sp,
+            )
+        }
     }
 }
 
 @Composable
 private fun SoundCard(state: RecordUiState, viewModel: DeckRecViewModel) {
+    // Local drag state so the knob tracks the finger without a storage write per frame; the
+    // settings value seeds it and the commit on release is what persists.
+    var gain by remember { mutableStateOf(state.settings.inputGainDb) }
+    var subBass by remember { mutableStateOf(state.settings.subBassAmount) }
+    var loudness by remember { mutableStateOf(state.settings.loudnessAmount) }
+
     SectionCard(title = "SOUND") {
         LabeledSlider(
             label = "GAIN",
-            valueText = "%+.1f dB".format(state.settings.inputGainDb),
-            value = state.settings.inputGainDb,
-            onValueChange = viewModel::setGain,
+            valueText = "%+.1f dB".format(gain),
+            value = gain,
+            onValueChange = {
+                gain = it
+                viewModel.previewGain(it)
+            },
+            onValueChangeFinished = { viewModel.commitGain(gain) },
             valueRange = DspChain.MIN_GAIN_DB..DspChain.MAX_GAIN_DB,
         )
         LabeledSlider(
             label = "SUB BASS",
-            valueText = "${(state.settings.subBassAmount * 100).roundToInt()}%",
-            value = state.settings.subBassAmount,
-            onValueChange = viewModel::setSubBass,
+            valueText = "${(subBass * 100).roundToInt()}%",
+            value = subBass,
+            onValueChange = {
+                subBass = it
+                viewModel.previewSubBass(it)
+            },
+            onValueChangeFinished = { viewModel.commitSubBass(subBass) },
             valueRange = 0f..1f,
         )
         LabeledSlider(
             label = "LOUDNESS",
-            valueText = "${(state.settings.loudnessAmount * 100).roundToInt()}%",
-            value = state.settings.loudnessAmount,
-            onValueChange = viewModel::setLoudness,
+            valueText = "${(loudness * 100).roundToInt()}%",
+            value = loudness,
+            onValueChange = {
+                loudness = it
+                viewModel.previewLoudness(it)
+            },
+            onValueChangeFinished = { viewModel.commitLoudness(loudness) },
             valueRange = 0f..1f,
         )
         Spacer(Modifier.height(4.dp))

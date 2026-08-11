@@ -257,6 +257,15 @@ fun DetailScreen(
                 InfoRow("Size", formatBytes(meta.sizeBytes))
                 InfoRow("Recorded from", meta.sourceDeviceName.ifBlank { "Unknown input" })
                 InfoRow("File name", meta.fileName)
+                if (meta.format == com.deckrec.data.RecordingFormat.AAC && meta.markers.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "MPEG-4 has nowhere to store cue points, so sharing this file " +
+                            "leaves its markers behind. Use \"Copy track list\" for the timings.",
+                        color = DeckColors.TextSecondary,
+                        fontSize = 11.sp,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SelectableChip(

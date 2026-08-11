@@ -43,6 +43,8 @@ data class RecordUiState(
     val markers: List<Marker> = emptyList(),
     val remainingSeconds: Long = 0,
     val notice: String? = null,
+    /** True while the input is open for metering but nothing is being written. */
+    val monitoring: Boolean = false,
 ) {
     val isRecording: Boolean get() = state is RecorderState.Recording
     val isPaused: Boolean get() = (state as? RecorderState.Recording)?.paused == true
@@ -77,19 +79,23 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     /** False until the library's first background scan finishes. */
     val libraryLoaded: StateFlow<Boolean> = store.loaded
 
-    val uiState: StateFlow<RecordUiState> = combine(
-        scanner.inputs,
-        scanner.usbAudioHardware,
-        settingsStore.settings,
+    // Split in two because combine() tops out at five flows.
+    private val recorderSnapshot = combine(
         combine(
             engine.state,
             engine.levels,
             engine.progress,
             engine.markers,
-            engine.notice,
-        ) { state, levels, progress, markers, notice ->
-            RecorderSnapshot(state, levels, progress, markers, notice)
-        },
+        ) { state, levels, progress, markers -> RecorderCore(state, levels, progress, markers) },
+        engine.notice,
+        engine.isMonitoring,
+    ) { core, notice, monitoring -> RecorderSnapshot(core, notice, monitoring) }
+
+    val uiState: StateFlow<RecordUiState> = combine(
+        scanner.inputs,
+        scanner.usbAudioHardware,
+        settingsStore.settings,
+        recorderSnapshot,
         _remainingSeconds,
     ) { inputs, hardware, settings, snapshot, remaining ->
         val selected = inputs.firstOrNull { it.id == settings.preferredDeviceId }
@@ -100,21 +106,27 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
             usbHardware = hardware,
             selectedInput = selected,
             settings = settings,
-            state = snapshot.state,
-            levels = snapshot.levels,
-            progress = snapshot.progress,
-            markers = snapshot.markers,
+            state = snapshot.core.state,
+            levels = snapshot.core.levels,
+            progress = snapshot.core.progress,
+            markers = snapshot.core.markers,
             remainingSeconds = remaining,
             notice = snapshot.notice,
+            monitoring = snapshot.monitoring,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecordUiState())
 
-    private data class RecorderSnapshot(
+    private data class RecorderCore(
         val state: RecorderState,
         val levels: Levels,
         val progress: RecordingProgress,
         val markers: List<Marker>,
+    )
+
+    private data class RecorderSnapshot(
+        val core: RecorderCore,
         val notice: String?,
+        val monitoring: Boolean,
     )
 
     init {
@@ -134,6 +146,43 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     fun refreshDevices() {
         scanner.refresh()
         refreshCapacity()
+    }
+
+    /** Set once the user has been warned about a non-USB input; the next tap goes through. */
+    private var wrongInputConfirmed = false
+
+    /**
+     * Runs the input through the record bus without writing, so the meters are live before REC.
+     * Driven by the record screen's lifecycle so the microphone is never held in the background.
+     */
+    fun startMonitoring() {
+        val state = uiState.value
+        val input = state.selectedInput ?: return
+        if (engine.isRecording) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                engine.startMonitor(
+                    state.settings.toRecorderConfig(
+                        deviceId = input.id,
+                        deviceName = input.productName,
+                        sourceChannelCount = input.maxChannelCount,
+                    )
+                )
+            }
+        }
+    }
+
+    fun stopMonitoring() {
+        viewModelScope.launch { withContext(Dispatchers.IO) { engine.stopMonitor() } }
+    }
+
+    /** Reopens the monitor so a changed input, channel pair or sample rate takes effect at once. */
+    private fun restartMonitoring() {
+        if (engine.isRecording) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { engine.stopMonitor() }
+            startMonitoring()
+        }
     }
 
     fun availableBytes(): Long = store.availableBytes()
@@ -169,18 +218,17 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        // A DJ mixer on the bus while the phone's own microphone is selected almost always means
-        // the routing did not take. Recording two hours of room noise is worse than not starting.
-        if (!input.isUsb && state.usbHardware.any { it.isKnownDjHardware }) {
-            _message.value =
-                "\"${input.productName}\" is not your mixer. Tap refresh and pick the USB input."
+        // Any USB audio device on the bus while a non-USB input is selected almost always means the
+        // routing did not take — not just Pioneer hardware, which is all the vendor-id list knows
+        // about. Warn once and let the second tap through: some mixers never expose a USB capture
+        // endpoint at all, and for that user a room recording beats no recording.
+        if (!input.isUsb && state.usbHardware.isNotEmpty() && !wrongInputConfirmed) {
+            wrongInputConfirmed = true
+            _message.value = "\"${input.productName}\" is not a USB input. " +
+                "Tap REC again to record from it anyway."
             return
         }
-
-        if (engine.isRecording) {
-            _message.value = "Still finishing the previous recording — try again in a moment."
-            return
-        }
+        wrongInputConfirmed = false
 
         // Clear any terminal state from a previous session before the service subscribes to it.
         engine.clearTerminalState()
@@ -209,17 +257,25 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
     // ---- Live controls -------------------------------------------------------------------
 
-    fun setGain(db: Float) {
+    // Preview applies to the live audio on every drag frame; commit persists once on release.
+    // Writing the whole preference file per frame was needless main-thread churn mid-set.
+    fun previewGain(db: Float) = engine.updateGain(db)
+
+    fun commitGain(db: Float) {
         settingsStore.update { it.copy(inputGainDb = db) }
         engine.updateGain(db)
     }
 
-    fun setSubBass(amount: Float) {
+    fun previewSubBass(amount: Float) = engine.updateSubBass(amount)
+
+    fun commitSubBass(amount: Float) {
         settingsStore.update { it.copy(subBassAmount = amount) }
         engine.updateSubBass(amount)
     }
 
-    fun setLoudness(amount: Float) {
+    fun previewLoudness(amount: Float) = engine.updateLoudness(amount)
+
+    fun commitLoudness(amount: Float) {
         settingsStore.update { it.copy(loudnessAmount = amount) }
         engine.updateLoudness(amount)
     }
@@ -238,10 +294,14 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectInput(input: AudioInput) {
         settingsStore.update { it.copy(preferredDeviceId = input.id, channelPairLeft = 0) }
+        wrongInputConfirmed = false
+        restartMonitoring()
     }
 
     fun selectChannelPair(pair: ChannelPair) {
         settingsStore.update { it.copy(channelPairLeft = pair.left) }
+        // Reopened immediately: picking the pair is done by watching the meters respond.
+        restartMonitoring()
     }
 
     fun setFormat(format: RecordingFormat) {
@@ -257,6 +317,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     fun setSampleRate(rate: Int) {
         settingsStore.update { it.copy(sampleRate = rate) }
         refreshCapacity()
+        restartMonitoring()
     }
 
     fun setAutoSplitMinutes(minutes: Int) = settingsStore.update { it.copy(autoSplitMinutes = minutes) }

@@ -54,7 +54,7 @@ class DeckRecApp : Application() {
             // Excludes whatever the engine has open: this scan is now concurrent with the rest of
             // startup, so a user who cold-starts and hits Record immediately could otherwise have
             // their in-progress file adopted as a crash orphan while it is still being written.
-            recordingStore.recoverOrphans(inUse = recordingEngine.openFileNames())
+            recordingStore.recoverOrphans(inUse = { recordingEngine.openFileNames() })
             recordingStore.refresh()
         }
 

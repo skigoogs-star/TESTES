@@ -106,6 +106,9 @@ class RecordingStore(private val context: Context) {
         refresh()
     }
 
+    /** Synchronized: startup, library edits and part completion all scan concurrently, and two
+     * overlapping scans can otherwise publish their results in the wrong order. */
+    @Synchronized
     fun refresh() {
         val metas = metaDir.listFiles { file -> file.extension == "json" }
             ?.mapNotNull { file ->
@@ -130,7 +133,7 @@ class RecordingStore(private val context: Context) {
      *
      * @return how many files were recovered.
      */
-    fun recoverOrphans(inUse: Set<String> = emptySet()): Int {
+    fun recoverOrphans(inUse: () -> Set<String> = { emptySet() }): Int {
         val known = metaDir.listFiles { file -> file.extension == "json" }
             ?.mapNotNull {
                 runCatching { json.decodeFromString(RecordingMeta.serializer(), it.readText()) }.getOrNull()
@@ -139,18 +142,20 @@ class RecordingStore(private val context: Context) {
             ?.toSet()
             ?: emptySet()
 
-        // A file the engine currently has open has no sidecar yet and looks exactly like a crash
-        // orphan. Adopting it would patch the header of a file being written and register a
-        // duplicate entry with a bogus duration.
         val orphans = recordingsDir.listFiles { file ->
             file.isFile &&
                 file.extension.lowercase() in AUDIO_EXTENSIONS &&
-                file.name !in known &&
-                file.name !in inUse
+                file.name !in known
         } ?: return 0
 
         var recovered = 0
         orphans.forEach { file ->
+            // Re-checked here rather than once up front: building `known` parses every sidecar in
+            // the library, which takes long enough for the user to have started a recording. A
+            // file the engine has open has no sidecar yet and looks exactly like a crash orphan —
+            // adopting it would patch the header of a file mid-write and leave two library entries
+            // sharing one audio file, where deleting either destroys the other.
+            if (file.name in inUse()) return@forEach
             val meta = runCatching { adopt(file) }.getOrNull()
             if (meta != null) {
                 runCatching {

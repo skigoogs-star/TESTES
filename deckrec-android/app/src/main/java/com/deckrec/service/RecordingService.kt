@@ -23,6 +23,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -50,6 +52,12 @@ class RecordingService : Service() {
 
     /** Latest start id, so shutdown can be refused when a newer start command has arrived. */
     private var latestStartId = 0
+
+    /** True between accepting an ACTION_START and the engine actually starting (or refusing). */
+    @Volatile
+    private var pendingStart = false
+
+    private var shutdownPending = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -126,21 +134,31 @@ class RecordingService : Service() {
                 pendingConfig = null
                 startForegroundCompat(buildNotification(RecorderState.Starting, 0, 0, 0))
                 acquireWakeLock()
-                sawRecording = false
+                pendingStart = true
                 scope.launch {
-                    val started = withContext(Dispatchers.IO) {
-                        // The previous session can still be draining its write queue for several
-                        // seconds. Waiting it out is the difference between the user's Record tap
-                        // being honoured and it silently evaporating.
-                        val deadline = System.currentTimeMillis() + START_WAIT_MS
-                        while (engine.isRecording && System.currentTimeMillis() < deadline) {
-                            Thread.sleep(50)
+                    var started = false
+                    try {
+                        started = withContext(Dispatchers.IO) {
+                            // The previous session can still be draining its write queue for
+                            // several seconds. Waiting it out is the difference between the user's
+                            // Record tap being honoured and it silently evaporating.
+                            val deadline = System.currentTimeMillis() + START_WAIT_MS
+                            while (engine.isRecording && System.currentTimeMillis() < deadline) {
+                                // delay(), not Thread.sleep(): cancellation has to reach this loop,
+                                // or a destroyed service still starts an orphaned recording that
+                                // has no foreground service, no wake lock and no way to stop it.
+                                delay(50)
+                            }
+                            if (!isActive || engine.isRecording) false else engine.start(config)
                         }
-                        engine.start(config)
+                    } finally {
+                        pendingStart = false
                     }
                     if (!started) {
                         Log.w(TAG, "Engine refused to start")
-                        postFinishedNotification("Could not start recording", "The previous recording is still finishing")
+                        val reason = (engine.state.value as? RecorderState.Failed)?.message
+                            ?: "The previous recording was still finishing."
+                        postFinishedNotification("Could not start recording", reason)
                         stopEverything(cancelNotification = false)
                     }
                 }
@@ -198,8 +216,11 @@ class RecordingService : Service() {
         // A stop belonging to a finished session must never tear down a session that has just
         // started. engine.stop() takes seconds, so a Record tap landing in that window is easily
         // delivered before the old stop's continuation runs.
-        if (DeckRecApp.from(this).recordingEngine.isRecording) {
-            Log.i(TAG, "Skipping shutdown: a recording is in progress")
+        if (DeckRecApp.from(this).recordingEngine.isRecording || pendingStart) {
+            // Deferred, not dropped. Returning here and hoping another emission arrives is how the
+            // service ends up pinned foreground with a stale notification and a held wake lock.
+            Log.i(TAG, "Deferring shutdown: work still in progress")
+            scheduleShutdownRetry(cancelNotification)
             return
         }
 
@@ -219,6 +240,35 @@ class RecordingService : Service() {
         // service even when a newer start command has already been delivered.
         if (!stopSelfResult(latestStartId)) {
             Log.i(TAG, "A newer start command arrived; staying alive")
+        }
+    }
+
+    /**
+     * Waits for the engine to settle, then shuts down for real.
+     *
+     * There is no second chance from the state flow: once the engine has published its terminal
+     * state, nothing else is coming, so a shutdown request that arrives too early has to be held
+     * rather than discarded.
+     */
+    private fun scheduleShutdownRetry(cancelNotification: Boolean) {
+        if (shutdownPending) return
+        shutdownPending = true
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val deadline = System.currentTimeMillis() + SHUTDOWN_WAIT_MS
+                    while ((DeckRecApp.from(this@RecordingService).recordingEngine.isRecording ||
+                            pendingStart) && System.currentTimeMillis() < deadline
+                    ) {
+                        delay(100)
+                    }
+                }
+            } finally {
+                shutdownPending = false
+            }
+            if (!DeckRecApp.from(this@RecordingService).recordingEngine.isRecording && !pendingStart) {
+                stopEverything(cancelNotification)
+            }
         }
     }
 
@@ -332,6 +382,7 @@ class RecordingService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val FINISHED_NOTIFICATION_ID = 1002
         private const val START_WAIT_MS = 20_000L
+        private const val SHUTDOWN_WAIT_MS = 40_000L
         private const val WAKE_LOCK_TAG = "DeckRec::Recording"
         private const val MAX_SET_MILLIS = 12L * 60L * 60L * 1000L
 
