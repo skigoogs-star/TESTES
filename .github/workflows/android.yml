@@ -7,12 +7,20 @@ on:
       - '.github/workflows/android.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build debug APK
     runs-on: ubuntu-latest
-    # A hung Gradle would otherwise sit here for the full six-hour default before anyone noticed.
-    timeout-minutes: 25
+    # Backstop only. The per-step timeouts below should always fire first and, unlike this one,
+    # they leave thread dumps in the log rather than having the runner kill everything silently.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: deckrec-android
@@ -29,12 +37,58 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          # Default is read-only off the default branch, which means every feature-branch run
+          # re-resolves the whole dependency graph over the network.
+          cache-read-only: false
+          cache-cleanup: on-success
+
+      - name: Start hang watchdog
+        run: |
+          nohup bash -c '
+            sleep 720
+            exec > "$RUNNER_TEMP/watchdog-dump.txt" 2>&1
+            echo "=== watchdog fired $(date -u) ==="
+            free -h; echo
+            ps auxww --sort=-rss | head -40; echo
+            for pid in $(pgrep -f "[j]ava"); do
+              echo "--- jstack $pid ---"
+              jstack "$pid" || true
+            done
+          ' >/dev/null 2>&1 &
+          echo "watchdog armed"
 
       - name: Run DSP regression tests
-        run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest
+        timeout-minutes: 15
+        run: |
+          set -uo pipefail
+          run_gradle() { timeout --kill-after=60 10m ./gradlew --stacktrace --console=plain "$@"; }
+          run_gradle :app:testDebugUnitTest && exit 0
+          status=$?
+          # 124/137 mean the watchdog killed a wedged JVM. Anything else is a real test failure and
+          # must not be retried into a false green.
+          if [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; then exit "$status"; fi
+          echo "::warning::Gradle hung. Dumping stacks, killing daemons, retrying once."
+          for pid in $(pgrep -f '[j]ava' || true); do echo "--- jstack $pid ---"; jstack "$pid" || true; done
+          free -h
+          ./gradlew --stop || true
+          pkill -9 -f KotlinCompileDaemon || true
+          pkill -9 -f aapt2 || true
+          run_gradle :app:testDebugUnitTest
 
       - name: Assemble debug APK
-        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+        timeout-minutes: 15
+        run: |
+          set -uo pipefail
+          run_gradle() { timeout --kill-after=60 10m ./gradlew --stacktrace --console=plain "$@"; }
+          run_gradle :app:assembleDebug && exit 0
+          status=$?
+          if [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; then exit "$status"; fi
+          echo "::warning::Gradle hung. Dumping stacks, killing daemons, retrying once."
+          for pid in $(pgrep -f '[j]ava' || true); do echo "--- jstack $pid ---"; jstack "$pid" || true; done
+          ./gradlew --stop || true
+          pkill -9 -f KotlinCompileDaemon || true
+          run_gradle :app:assembleDebug
 
       - name: Rename APK
         run: |
@@ -48,3 +102,21 @@ jobs:
           path: deckrec-android/out/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload unit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsp-test-report
+          path: deckrec-android/app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload hang diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hang-diagnostics
+          path: ${{ runner.temp }}/watchdog-dump.txt
+          if-no-files-found: ignore
+          retention-days: 14
