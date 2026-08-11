@@ -74,6 +74,8 @@ data class RecordingProgress(
     val sizeBytes: Long = 0L,
     val markerCount: Int = 0,
     val partIndex: Int = 0,
+    /** Frames the writer could not keep up with. Non-zero means audio is missing from the file. */
+    val droppedFrames: Long = 0L,
 )
 
 fun formatDuration(millis: Long): String {

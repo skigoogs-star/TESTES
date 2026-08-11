@@ -73,11 +73,24 @@ fun DetailScreen(
     onBack: () -> Unit,
 ) {
     val recordings by viewModel.recordings.collectAsStateWithLifecycle()
+    val libraryLoaded by viewModel.libraryLoaded.collectAsStateWithLifecycle()
     val meta = recordings.firstOrNull { it.id == recordingId }
 
     if (meta == null) {
-        // The recording was deleted (possibly from this very screen); fall back to the library.
-        LaunchedEffect(recordingId) { onBack() }
+        // The library loads off the main thread, so an empty list here is the normal state after
+        // process death, not a missing recording. Only bail out once we know it is genuinely gone.
+        if (libraryLoaded) {
+            LaunchedEffect(recordingId) { onBack() }
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(contentPadding),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Loading…", color = DeckColors.TextSecondary, fontSize = 14.sp)
+            }
+        }
         return
     }
 
@@ -165,6 +178,19 @@ fun DetailScreen(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp,
                         color = DeckColors.TextSecondary,
+                    )
+                }
+                player.error?.let { error ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(text = error, color = DeckColors.MeterClip, fontSize = 12.sp)
+                }
+                if (buckets.isEmpty() && player.error == null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "No waveform for this recording — it was recovered after the app " +
+                            "stopped unexpectedly. Playback and markers still work.",
+                        color = DeckColors.TextSecondary,
+                        fontSize = 11.sp,
                     )
                 }
                 Spacer(Modifier.height(8.dp))
@@ -275,6 +301,7 @@ fun DetailScreen(
     editingMarker?.let { marker ->
         MarkerEditDialog(
             marker = marker,
+            durationMs = durationMs,
             onDismiss = { editingMarker = null },
             onSave = { updated ->
                 viewModel.updateMarker(meta, updated)
@@ -385,11 +412,14 @@ private fun DeckTextField(
 @Composable
 private fun MarkerEditDialog(
     marker: Marker,
+    durationMs: Long,
     onDismiss: () -> Unit,
     onSave: (Marker) -> Unit,
 ) {
     var label by remember(marker.id) { mutableStateOf(marker.label) }
     var positionText by remember(marker.id) { mutableStateOf(formatDuration(marker.positionMs)) }
+    val parsed = parseDuration(positionText)
+    val outOfRange = parsed != null && durationMs > 0 && parsed > durationMs
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -402,13 +432,27 @@ private fun MarkerEditDialog(
                     onValueChange = { positionText = it },
                     label = "Position (mm:ss or h:mm:ss)",
                 )
+                // Silently keeping the old position on a typo looks like the dialog ignored you;
+                // an out-of-range time silently pins the marker to the end of the waveform.
+                val problem = when {
+                    parsed == null -> "Not a time — use mm:ss or h:mm:ss."
+                    outOfRange -> "Past the end (${formatDuration(durationMs)}); it will be clamped."
+                    else -> null
+                }
+                problem?.let {
+                    Text(text = it, color = DeckColors.MeterMid, fontSize = 11.sp)
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val position = parseDuration(positionText) ?: marker.positionMs
-                onSave(marker.copy(label = label, positionMs = position, automatic = false))
-            }) {
+            TextButton(
+                enabled = parsed != null,
+                onClick = {
+                    val limit = if (durationMs > 0) durationMs else Long.MAX_VALUE
+                    val position = (parsed ?: marker.positionMs).coerceIn(0L, limit)
+                    onSave(marker.copy(label = label, positionMs = position, automatic = false))
+                },
+            ) {
                 Text("Save", color = DeckColors.Accent)
             }
         },
@@ -443,6 +487,9 @@ private class PlayerController {
     var positionMs by mutableStateOf(0L)
     var durationMs by mutableStateOf(0L)
 
+    /** Non-null when the file could not be opened; shown inline instead of a dead play button. */
+    var error by mutableStateOf<String?>(null)
+
     fun togglePlay() {
         val player = mediaPlayer ?: return
         if (player.isPlaying) {
@@ -473,12 +520,18 @@ private fun rememberPlayer(file: File): PlayerController {
     val controller = remember(file.path) { PlayerController() }
 
     DisposableEffect(file.path) {
-        val player = runCatching {
+        val result = runCatching {
             MediaPlayer().apply {
                 setDataSource(file.absolutePath)
                 prepare()
             }
-        }.getOrNull()
+        }
+        val player = result.getOrNull()
+        controller.error = when {
+            player != null -> null
+            !file.isFile -> "The audio file is missing."
+            else -> "This file could not be opened — it may be incomplete."
+        }
         controller.mediaPlayer = player
         controller.durationMs = player?.duration?.toLong() ?: 0L
         player?.setOnCompletionListener {

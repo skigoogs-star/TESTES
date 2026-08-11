@@ -53,6 +53,14 @@ class RecordingStore(private val context: Context) {
     private val _recordings = MutableStateFlow<List<RecordingMeta>>(emptyList())
     val recordings: StateFlow<List<RecordingMeta>> = _recordings.asStateFlow()
 
+    /**
+     * False until the first scan completes. Screens need to tell "the library is still loading"
+     * apart from "this recording does not exist" — the library now loads off the main thread, so
+     * an empty list on first composition is the normal case rather than an error.
+     */
+    private val _loaded = MutableStateFlow(false)
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
+
     data class RecordingTarget(val id: String, val audioFile: File, val peaksFile: File)
 
     /** Allocates the files for a new recording (or the next part of one). */
@@ -110,6 +118,7 @@ class RecordingStore(private val context: Context) {
             ?.sortedByDescending { it.createdAtEpochMs }
             ?: emptyList()
         _recordings.value = metas
+        _loaded.value = true
     }
 
     /**
@@ -121,7 +130,7 @@ class RecordingStore(private val context: Context) {
      *
      * @return how many files were recovered.
      */
-    fun recoverOrphans(): Int {
+    fun recoverOrphans(inUse: Set<String> = emptySet()): Int {
         val known = metaDir.listFiles { file -> file.extension == "json" }
             ?.mapNotNull {
                 runCatching { json.decodeFromString(RecordingMeta.serializer(), it.readText()) }.getOrNull()
@@ -130,8 +139,14 @@ class RecordingStore(private val context: Context) {
             ?.toSet()
             ?: emptySet()
 
+        // A file the engine currently has open has no sidecar yet and looks exactly like a crash
+        // orphan. Adopting it would patch the header of a file being written and register a
+        // duplicate entry with a bogus duration.
         val orphans = recordingsDir.listFiles { file ->
-            file.isFile && file.extension.lowercase() in AUDIO_EXTENSIONS && file.name !in known
+            file.isFile &&
+                file.extension.lowercase() in AUDIO_EXTENSIONS &&
+                file.name !in known &&
+                file.name !in inUse
         } ?: return 0
 
         var recovered = 0

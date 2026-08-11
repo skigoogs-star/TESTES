@@ -48,6 +48,9 @@ class RecordingService : Service() {
      */
     private var sawRecording = false
 
+    /** Latest start id, so shutdown can be refused when a newer start command has arrived. */
+    private var latestStartId = 0
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -69,7 +72,15 @@ class RecordingService : Service() {
                 val finished = sawRecording &&
                     (state is RecorderState.Failed || state is RecorderState.Idle)
                 if (finished) {
-                    stopEverything()
+                    if (state is RecorderState.Failed) {
+                        postFinishedNotification(
+                            "Recording stopped — ${formatDuration(progress.elapsedMs)} captured",
+                            state.message,
+                        )
+                        stopEverything(cancelNotification = true)
+                    } else {
+                        stopEverything()
+                    }
                     return@onEach
                 }
 
@@ -95,6 +106,7 @@ class RecordingService : Service() {
         val app = DeckRecApp.from(this)
         val engine = app.recordingEngine
         val action = intent?.action
+        latestStartId = startId
 
         // Every path through here must either go foreground immediately or shut the service down.
         // Anything else leaves a started service that is neither foreground nor stoppable — and
@@ -114,11 +126,22 @@ class RecordingService : Service() {
                 pendingConfig = null
                 startForegroundCompat(buildNotification(RecorderState.Starting, 0, 0, 0))
                 acquireWakeLock()
-                if (!engine.isRecording) {
-                    if (!engine.start(config)) {
-                        // The engine refused (permission, or already running down); do not sit
-                        // here as a foreground service with nothing to show for it.
-                        stopEverything()
+                sawRecording = false
+                scope.launch {
+                    val started = withContext(Dispatchers.IO) {
+                        // The previous session can still be draining its write queue for several
+                        // seconds. Waiting it out is the difference between the user's Record tap
+                        // being honoured and it silently evaporating.
+                        val deadline = System.currentTimeMillis() + START_WAIT_MS
+                        while (engine.isRecording && System.currentTimeMillis() < deadline) {
+                            Thread.sleep(50)
+                        }
+                        engine.start(config)
+                    }
+                    if (!started) {
+                        Log.w(TAG, "Engine refused to start")
+                        postFinishedNotification("Could not start recording", "The previous recording is still finishing")
+                        stopEverything(cancelNotification = false)
                     }
                 }
             }
@@ -171,7 +194,15 @@ class RecordingService : Service() {
         runCatching { NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification) }
     }
 
-    private fun stopEverything() {
+    private fun stopEverything(cancelNotification: Boolean = true) {
+        // A stop belonging to a finished session must never tear down a session that has just
+        // started. engine.stop() takes seconds, so a Record tap landing in that window is easily
+        // delivered before the old stop's continuation runs.
+        if (DeckRecApp.from(this).recordingEngine.isRecording) {
+            Log.i(TAG, "Skipping shutdown: a recording is in progress")
+            return
+        }
+
         releaseWakeLock()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -181,8 +212,43 @@ class RecordingService : Service() {
         }
         // stopForeground only removes a notification the service itself owns. One posted through
         // notify() outlives it, so cancel explicitly or a phantom "Recording" sits in the shade.
-        runCatching { NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID) }
-        stopSelf()
+        if (cancelNotification) {
+            runCatching { NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID) }
+        }
+        // stopSelfResult, not stopSelf: the bare form ignores start ids and will destroy the
+        // service even when a newer start command has already been delivered.
+        if (!stopSelfResult(latestStartId)) {
+            Log.i(TAG, "A newer start command arrived; staying alive")
+        }
+    }
+
+    /**
+     * Replaces the ongoing notification with a dismissible one describing how the session ended.
+     *
+     * Without this, a set that dies in the user's pocket — cable pulled, storage full — simply
+     * makes the notification disappear. Nothing else tells them until they next open the app, by
+     * which time the gig is over.
+     */
+    private fun postFinishedNotification(title: String, detail: String) {
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, DeckRecApp.RECORDING_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_rec)
+            .setContentTitle(title)
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .setOngoing(false)
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .build()
+        runCatching {
+            NotificationManagerCompat.from(this).notify(FINISHED_NOTIFICATION_ID, notification)
+        }
     }
 
     private fun startForegroundCompat(notification: Notification) {
@@ -264,6 +330,8 @@ class RecordingService : Service() {
 
         private const val TAG = "RecordingService"
         private const val NOTIFICATION_ID = 1001
+        private const val FINISHED_NOTIFICATION_ID = 1002
+        private const val START_WAIT_MS = 20_000L
         private const val WAKE_LOCK_TAG = "DeckRec::Recording"
         private const val MAX_SET_MILLIS = 12L * 60L * 60L * 1000L
 

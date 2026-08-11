@@ -51,7 +51,10 @@ class DeckRecApp : Application() {
         // every cold start — including one triggered by a notification action — and ANRs on a
         // large library. Nothing on screen needs it before the first frame.
         ioScope.launch {
-            recordingStore.recoverOrphans()
+            // Excludes whatever the engine has open: this scan is now concurrent with the rest of
+            // startup, so a user who cold-starts and hits Record immediately could otherwise have
+            // their in-progress file adopted as a crash orphan while it is still being written.
+            recordingStore.recoverOrphans(inUse = recordingEngine.openFileNames())
             recordingStore.refresh()
         }
 

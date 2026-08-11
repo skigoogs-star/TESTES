@@ -39,13 +39,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Two threads, deliberately. The capture thread does nothing but read, process and hand off — it
  * never touches the filesystem, because a flash write stall of a few hundred milliseconds is
- * routine on a phone and would silently overrun the capture buffer, losing audio with no error
- * anywhere. The writer thread owns the output files and absorbs those stalls out of a queue deep
- * enough to ride through them.
+ * routine on a phone and would silently overrun the capture buffer. The writer thread owns the
+ * output files and absorbs those stalls out of a queue deep enough to ride through them.
  *
- * The other rule this class follows: **recorded audio is never deleted.** Every failure path
- * finalises what was captured rather than discarding it. A file is only removed when it contains
- * no audio at all.
+ * Two rules this class follows:
+ *  - **Recorded audio is never deleted.** Every failure path finalises what was captured. A file
+ *    is only removed when it contains no audio at all.
+ *  - **All per-recording state lives in a [Session].** Nothing that a writer thread reads is stored
+ *    on the engine, because a writer can outlive the join timeout and would otherwise read the
+ *    *next* session's flags — spinning forever on a stale termination condition, stamping one
+ *    session's markers onto another's file, or failing a live session on behalf of a dead one.
  */
 class RecordingEngine(
     private val context: Context,
@@ -65,7 +68,7 @@ class RecordingEngine(
     private val _markers = MutableStateFlow<List<Marker>>(emptyList())
     val markers: StateFlow<List<Marker>> = _markers.asStateFlow()
 
-    /** Non-fatal things the DJ should know about this session, e.g. a channel pair we could not honour. */
+    /** Non-fatal things the DJ should know about this session. */
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
 
@@ -83,7 +86,7 @@ class RecordingEngine(
     private var writerThread: Thread? = null
 
     @Volatile
-    private var config: RecorderConfig = RecorderConfig()
+    private var session: Session? = null
 
     @Volatile
     private var dsp: DspChain? = null
@@ -91,24 +94,10 @@ class RecordingEngine(
     @Volatile
     private var pendingManualMarker = false
 
-    /** Set by the writer thread when it can no longer write; the capture thread then winds down. */
-    @Volatile
-    private var writerFailure: String? = null
-
-    private val markerLock = Any()
-    private val markerList = mutableListOf<Marker>()
-
-    /** Frames captured across all parts of the current session. */
-    @Volatile
-    private var sessionFrames = 0L
-
-    private var freeBlocks: ArrayBlockingQueue<Block>? = null
-    private var queuedBlocks: ArrayBlockingQueue<Block>? = null
-
-    @Volatile
-    private var captureFinished = false
-
     val isRecording: Boolean get() = running.get()
+
+    /** File names the engine currently has open, so the library never adopts a live recording. */
+    fun openFileNames(): Set<String> = session?.openFileNames() ?: emptySet()
 
     fun start(config: RecorderConfig): Boolean {
         // compareAndSet, not get-then-set: a check-then-act here lets two callers both start a
@@ -123,19 +112,16 @@ class RecordingEngine(
             return false
         }
 
-        this.config = config
+        val newSession = Session(config)
+        session = newSession
         stopRequested.set(false)
         paused.set(false)
-        sessionFrames = 0L
-        writerFailure = null
-        captureFinished = false
-        synchronized(markerLock) { markerList.clear() }
         _markers.value = emptyList()
         _progress.value = RecordingProgress()
         _notice.value = null
         _state.value = RecorderState.Starting
 
-        val worker = Thread({ runCapture() }, "DeckRec-Audio")
+        val worker = Thread({ runCapture(newSession) }, "DeckRec-Audio")
         worker.priority = Thread.MAX_PRIORITY
         captureThread = worker
         worker.start()
@@ -166,35 +152,39 @@ class RecordingEngine(
 
     /** Drops a cue point at the current position. Safe to call from any thread. */
     fun addMarker(label: String = "") {
+        val live = session ?: return
         if (!running.get()) return
-        val positionMs = sessionFrames * 1000L / config.sampleRate.coerceAtLeast(1)
-        addMarkerInternal(positionMs, label, automatic = false)
+        val positionMs = live.frames * 1000L / live.config.sampleRate.coerceAtLeast(1)
+        addMarkerInternal(live, positionMs, label, automatic = false)
         pendingManualMarker = true
     }
 
     fun updateGain(db: Float) {
-        config = config.copy(inputGainDb = db)
         dsp?.inputGainDb = db
     }
 
     fun updateSubBass(amount: Float) {
-        config = config.copy(subBassAmount = amount)
         dsp?.subBassAmount = amount
     }
 
     fun updateLoudness(amount: Float) {
-        config = config.copy(loudnessAmount = amount)
         dsp?.loudnessAmount = amount
     }
 
     fun updateLimiter(enabled: Boolean) {
-        config = config.copy(limiterEnabled = enabled)
         dsp?.limiterEnabled = enabled
     }
 
     fun updateAutoMarkers(enabled: Boolean) {
-        config = config.copy(autoMarkersEnabled = enabled)
         dsp?.transitionDetector?.enabled = enabled
+    }
+
+    fun updateMarkerSensitivity(value: Float) {
+        dsp?.transitionDetector?.sensitivity = value
+    }
+
+    fun updateMarkerGapSeconds(seconds: Float) {
+        dsp?.transitionDetector?.minimumGapSeconds = seconds
     }
 
     fun consumeNotice() {
@@ -206,8 +196,7 @@ class RecordingEngine(
      *
      * [RecorderState.Failed] is sticky so the UI can show it, but the recording service treats a
      * terminal state as "this session is over and I should shut down". Without clearing it first,
-     * a service started after any earlier failure sees the stale value the moment it subscribes
-     * and stops itself out from under the new recording.
+     * a service started after any earlier failure sees the stale value the moment it subscribes.
      */
     fun clearTerminalState() {
         if (running.get()) return
@@ -215,28 +204,44 @@ class RecordingEngine(
         _notice.value = null
     }
 
-    private fun addMarkerInternal(positionMs: Long, label: String, automatic: Boolean) {
+    private fun addMarkerInternal(
+        live: Session,
+        positionMs: Long,
+        label: String,
+        automatic: Boolean,
+    ) {
         val marker = Marker(
             id = UUID.randomUUID().toString(),
             positionMs = positionMs,
             label = label,
             automatic = automatic,
         )
-        val snapshot = synchronized(markerLock) {
-            markerList.add(marker)
-            markerList.sortBy { it.positionMs }
-            markerList.toList()
+        val snapshot = synchronized(live.markerLock) {
+            live.markers.add(marker)
+            live.markers.sortBy { it.positionMs }
+            live.markers.toList()
         }
+        if (session !== live) return
         _markers.value = snapshot
-        // update{} rather than value = value.copy{}: the capture thread, the writer thread and the
-        // UI all mutate different fields of this object, and a read-modify-write would lose one.
         _progress.update { it.copy(markerCount = snapshot.size) }
+    }
+
+    /** Publishes only on behalf of the live session, so a lingering writer cannot stamp on it. */
+    private fun publish(live: Session, transform: (RecordingProgress) -> RecordingProgress) {
+        if (session !== live) return
+        _progress.update(transform)
+    }
+
+    private fun notice(live: Session, message: String) {
+        if (session !== live) return
+        _notice.value = message
     }
 
     // ---- Capture thread -------------------------------------------------------------------
 
-    private fun runCapture() {
+    private fun runCapture(live: Session) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        val config = live.config
         var capture: Capture? = null
 
         try {
@@ -244,9 +249,21 @@ class RecordingEngine(
                 ?: throw IllegalStateException("No usable capture format on this input")
 
             if (!capture.honouredRequestedPair) {
-                _notice.value = "This input would not expose channels " +
-                    "${config.channelPair.left + 1}/${config.channelPair.right + 1}; " +
-                    "recording channels 1/2 instead."
+                notice(
+                    live,
+                    "This input would not expose channels " +
+                        "${config.channelPair.left + 1}/${config.channelPair.right + 1}; " +
+                        "recording channels 1/2 instead.",
+                )
+            }
+            if (!capture.pinnedToDevice && config.deviceId != null) {
+                // Worth shouting about: the alternative is two hours of room noise off the phone
+                // microphone with the meters moving convincingly the whole time.
+                notice(
+                    live,
+                    "Could not route from ${config.deviceName}. Recording the phone's default " +
+                        "input instead — check the cable and the mixer's USB setting.",
+                )
             }
 
             val chain = DspChain(config.sampleRate).apply {
@@ -261,7 +278,7 @@ class RecordingEngine(
             dsp = chain
 
             val framesPerRead = capture.framesPerRead
-            startWriter(framesPerRead)
+            startWriter(live, framesPerRead)
 
             capture.record.startRecording()
             if (capture.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
@@ -274,7 +291,7 @@ class RecordingEngine(
             val rawShorts = if (capture.isFloat) ShortArray(0) else ShortArray(framesPerRead * sourceChannels)
             val stereo = FloatArray(framesPerRead * 2)
 
-            while (!stopRequested.get() && writerFailure == null) {
+            while (!stopRequested.get() && live.failure == null) {
                 val framesRead = readFrames(capture, rawFloats, rawShorts, framesPerRead)
                 if (framesRead < 0) throw IllegalStateException(readErrorMessage(framesRead))
                 if (framesRead == 0) continue
@@ -286,26 +303,38 @@ class RecordingEngine(
 
                 deinterleave(capture, rawFloats, rawShorts, stereo, framesRead)
 
-                val blockStartFrame = sessionFrames
+                // The marker timeline is the *file* timeline, so it is only ever advanced by audio
+                // that actually reached the writer.
+                val blockStartFrame = live.frames
                 _levels.value = chain.process(stereo, framesRead)
 
                 val detected = chain.transitionDetector.analyse(stereo, framesRead, blockStartFrame)
                 if (pendingManualMarker) {
                     chain.transitionDetector.noteManualMarker(blockStartFrame)
                     pendingManualMarker = false
-                    // A transition the detector already consumed on this block would otherwise be
-                    // thrown away entirely rather than merely deferred.
-                    if (detected >= 0) {
-                        addMarkerInternal(detected * 1000L / config.sampleRate, "", automatic = true)
-                    }
-                } else if (detected >= 0) {
-                    addMarkerInternal(detected * 1000L / config.sampleRate, "", automatic = true)
+                }
+                if (detected >= 0) {
+                    addMarkerInternal(
+                        live,
+                        detected * 1000L / config.sampleRate,
+                        "",
+                        automatic = true,
+                    )
                 }
 
-                enqueue(stereo, framesRead)
-                sessionFrames += framesRead
+                if (enqueue(live, stereo, framesRead)) {
+                    live.frames += framesRead
+                } else {
+                    live.droppedFrames += framesRead
+                    notice(live, "Storage could not keep up; some audio was dropped.")
+                }
 
-                _progress.update { it.copy(elapsedMs = sessionFrames * 1000L / config.sampleRate) }
+                publish(live) {
+                    it.copy(
+                        elapsedMs = live.frames * 1000L / config.sampleRate,
+                        droppedFrames = live.droppedFrames,
+                    )
+                }
             }
 
             _state.value = RecorderState.Stopping
@@ -315,7 +344,7 @@ class RecordingEngine(
         } finally {
             runCatching { capture?.record?.stop() }
             runCatching { capture?.record?.release() }
-            captureFinished = true
+            live.captureFinished = true
 
             // The writer owns the files; wait for it to close them before declaring the session over.
             writerThread?.let { runCatching { it.join(WRITER_JOIN_MS) } }
@@ -324,7 +353,7 @@ class RecordingEngine(
             _levels.value = Levels()
             running.set(false)
 
-            val failure = writerFailure
+            val failure = live.failure
             if (failure != null) {
                 _state.value = RecorderState.Failed(failure)
             } else if (_state.value !is RecorderState.Failed) {
@@ -333,44 +362,52 @@ class RecordingEngine(
         }
     }
 
-    private fun enqueue(stereo: FloatArray, frames: Int) {
-        val free = freeBlocks ?: return
-        val queue = queuedBlocks ?: return
+    /** @return true if the block was handed to the writer. */
+    private fun enqueue(live: Session, stereo: FloatArray, frames: Int): Boolean {
+        val free = live.free ?: return false
+        val queue = live.queued ?: return false
         // Waiting briefly is right: the AudioRecord buffer is deep enough to cover it, and dropping
         // audio should be a last resort rather than the first thing that happens under load.
         val block = free.poll(ENQUEUE_WAIT_MS, TimeUnit.MILLISECONDS)
         if (block == null) {
             Log.w(TAG, "Writer is not keeping up; dropped $frames frames")
-            return
+            return false
         }
         System.arraycopy(stereo, 0, block.data, 0, frames * 2)
         block.frames = frames
         if (!queue.offer(block)) {
             free.offer(block)
             Log.w(TAG, "Write queue full; dropped $frames frames")
+            return false
         }
+        return true
     }
 
     // ---- Writer thread --------------------------------------------------------------------
 
-    private fun startWriter(framesPerRead: Int) {
-        val blockCount = ((config.sampleRate * QUEUE_SECONDS) / framesPerRead).coerceIn(16, 512)
+    private fun startWriter(live: Session, framesPerRead: Int) {
+        val blockCount = ((live.config.sampleRate * QUEUE_SECONDS) / framesPerRead).coerceIn(16, 512)
         val free = ArrayBlockingQueue<Block>(blockCount)
         val queued = ArrayBlockingQueue<Block>(blockCount)
         repeat(blockCount) { free.offer(Block(FloatArray(framesPerRead * 2))) }
-        freeBlocks = free
-        queuedBlocks = queued
+        live.free = free
+        live.queued = queued
 
-        val worker = Thread({ runWriter(free, queued) }, "DeckRec-Writer")
+        val worker = Thread({ runWriter(live, free, queued) }, "DeckRec-Writer")
         worker.priority = Thread.NORM_PRIORITY + 2
         writerThread = worker
         worker.start()
     }
 
-    private fun runWriter(free: ArrayBlockingQueue<Block>, queued: ArrayBlockingQueue<Block>) {
+    private fun runWriter(
+        live: Session,
+        free: ArrayBlockingQueue<Block>,
+        queued: ArrayBlockingQueue<Block>,
+    ) {
+        val config = live.config
         var current: Part? = null
         try {
-            current = newPart(partIndex = 0, startSessionFrame = 0L)
+            current = newPart(live, partIndex = 0, startSessionFrame = 0L)
 
             val splitFrames = if (config.autoSplitEnabled) {
                 config.autoSplitMinutes.toLong() * 60L * config.sampleRate
@@ -382,7 +419,9 @@ class RecordingEngine(
             while (true) {
                 val block = queued.poll(WRITER_POLL_MS, TimeUnit.MILLISECONDS)
                 if (block == null) {
-                    if (captureFinished && queued.isEmpty()) break
+                    // Reads this session's own flag, never the engine's: a writer that outlived its
+                    // join must still terminate on its own session ending, not on the next one's.
+                    if (live.captureFinished && queued.isEmpty()) break
                     continue
                 }
 
@@ -392,7 +431,7 @@ class RecordingEngine(
                 part.frames += block.frames
                 free.offer(block)
 
-                _progress.update { it.copy(sizeBytes = part.sink.bytesOnDisk, partIndex = part.index) }
+                publish(live) { it.copy(sizeBytes = part.sink.bytesOnDisk, partIndex = part.index) }
 
                 if (part.frames >= splitFrames || part.sink.bytesOnDisk >= maxPartBytes) {
                     // Commit the finished part and drop the reference *before* opening the next
@@ -401,39 +440,42 @@ class RecordingEngine(
                     val nextIndex = part.index + 1
                     val nextStart = part.startSessionFrame + part.frames
                     current = null
-                    finishPart(part)
-                    current = newPart(nextIndex, nextStart)
+                    finishPart(live, part)
+                    current = newPart(live, nextIndex, nextStart)
                 }
             }
 
             current?.let {
                 current = null
-                finishPart(it)
+                finishPart(live, it)
             }
         } catch (e: Throwable) {
             Log.e(TAG, "Writer failed", e)
-            writerFailure = e.message ?: "Could not write to storage"
+            live.failure = e.message ?: "Could not write to storage"
             // Salvage rather than discard: whatever was captured up to this point is kept.
-            current?.let { runCatching { finishPart(it) } }
+            current?.let { runCatching { finishPart(live, it) } }
         }
     }
 
-    private fun newPart(partIndex: Int, startSessionFrame: Long): Part {
-        val target = store.newRecordingTarget(config, partIndex)
-        return Part(
+    private fun newPart(live: Session, partIndex: Int, startSessionFrame: Long): Part {
+        val target = store.newRecordingTarget(live.config, partIndex)
+        val part = Part(
             index = partIndex,
             target = target,
-            sink = openSink(target.audioFile),
+            sink = openSink(live.config, target.audioFile),
             peaks = PeakFileWriter(target.peaksFile),
             startedAt = System.currentTimeMillis(),
             startSessionFrame = startSessionFrame,
         )
+        live.openPart = part
+        return part
     }
 
-    private fun finishPart(part: Part) {
+    private fun finishPart(live: Session, part: Part) {
         runCatching { part.peaks.close() }
+        val config = live.config
 
-        val snapshot = synchronized(markerLock) { markerList.toList() }
+        val snapshot = synchronized(live.markerLock) { live.markers.toList() }
         val partStartMs = part.startSessionFrame * 1000L / config.sampleRate
         val partDurationMs = part.frames * 1000L / config.sampleRate
         // Half-open at the top: a marker landing exactly on a split boundary belongs to the part
@@ -443,10 +485,26 @@ class RecordingEngine(
             .map { it.copy(positionMs = it.positionMs - partStartMs) }
 
         val usable = runCatching { part.sink.finish(partMarkers) }.getOrDefault(false)
-        if (!usable && part.frames == 0L) {
-            // Nothing was ever captured into this file; there is no audio to lose.
+        live.openPart = null
+
+        if (part.frames == 0L) {
+            // Nothing was ever captured, so there is no audio to lose — and leaving the stub behind
+            // would have the library adopt it as a phantom "recovered" recording at next launch.
             runCatching { part.target.peaksFile.delete() }
+            runCatching { part.target.audioFile.delete() }
             return
+        }
+
+        if (!part.target.audioFile.isFile) {
+            Log.w(TAG, "Part ${part.index} left no file on disk")
+            return
+        }
+
+        if (!usable && config.format.isWav) {
+            // finish() failed partway, so the header still declares a zero-length data chunk. Once
+            // a sidecar exists the launch-time orphan scan will skip this file forever, so this is
+            // the only chance to make the salvaged audio playable.
+            runCatching { WavSink.repairTruncated(part.target.audioFile) }
         }
 
         val meta = RecordingMeta(
@@ -464,17 +522,13 @@ class RecordingEngine(
             sizeBytes = part.target.audioFile.length(),
             partIndex = part.index,
         )
-        if (!part.target.audioFile.isFile) {
-            Log.w(TAG, "Part ${part.index} left no file on disk")
-            return
-        }
         // refreshLibrary = false: rescanning the whole library here would block the writer while
         // audio is still arriving. The listener refreshes off-thread instead.
         store.save(meta, refreshLibrary = false)
         onPartCompleted?.invoke(meta)
     }
 
-    private fun openSink(file: File): AudioSink = when (config.format) {
+    private fun openSink(config: RecorderConfig, file: File): AudioSink = when (config.format) {
         RecordingFormat.WAV_24 -> WavSink(file, config.sampleRate, 2, 24)
         RecordingFormat.WAV_16 -> WavSink(file, config.sampleRate, 2, 16)
         RecordingFormat.AAC -> AacSink(file, config.sampleRate, 2, config.aacBitrateKbps)
@@ -607,8 +661,9 @@ class RecordingEngine(
             return null
         }
 
-        if (deviceInfo != null && !record.setPreferredDevice(deviceInfo)) {
-            Log.w(TAG, "Could not pin the stream to ${deviceInfo.productName}; using the default input")
+        val pinned = if (deviceInfo == null) true else record.setPreferredDevice(deviceInfo)
+        if (!pinned) {
+            Log.w(TAG, "Could not pin the stream to ${deviceInfo?.productName}")
         }
 
         val delivered = record.channelCount.coerceAtLeast(1)
@@ -623,6 +678,7 @@ class RecordingEngine(
             rightIndex = right,
             framesPerRead = framesPerRead,
             honouredRequestedPair = !wantsSpecificPair || attempt.selectsChannels,
+            pinnedToDevice = pinned,
         )
     }
 
@@ -693,7 +749,35 @@ class RecordingEngine(
         val rightIndex: Int,
         val framesPerRead: Int,
         val honouredRequestedPair: Boolean,
+        val pinnedToDevice: Boolean,
     )
+
+    /**
+     * Everything belonging to one recording session.
+     *
+     * Held by both threads for the life of that session and by nothing else afterwards, so a writer
+     * that outlives its join keeps reading its own flags rather than the next session's.
+     */
+    private class Session(val config: RecorderConfig) {
+        @Volatile var captureFinished = false
+        @Volatile var failure: String? = null
+
+        /** Frames that actually reached the writer — the timeline the file and markers share. */
+        @Volatile var frames = 0L
+
+        @Volatile var droppedFrames = 0L
+
+        @Volatile var free: ArrayBlockingQueue<Block>? = null
+        @Volatile var queued: ArrayBlockingQueue<Block>? = null
+
+        @Volatile var openPart: Part? = null
+
+        val markerLock = Any()
+        val markers = mutableListOf<Marker>()
+
+        fun openFileNames(): Set<String> =
+            openPart?.let { setOf(it.target.audioFile.name) } ?: emptySet()
+    }
 
     /** One output file of a session: everything auto-split has to swap out together. */
     private class Part(

@@ -20,6 +20,7 @@ import com.deckrec.usb.AudioInput
 import com.deckrec.usb.ChannelPair
 import com.deckrec.usb.UsbHardware
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -73,6 +74,9 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
     val recordings: StateFlow<List<RecordingMeta>> = store.recordings
 
+    /** False until the library's first background scan finishes. */
+    val libraryLoaded: StateFlow<Boolean> = store.loaded
+
     val uiState: StateFlow<RecordUiState> = combine(
         scanner.inputs,
         scanner.usbAudioHardware,
@@ -115,6 +119,14 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         refreshCapacity()
+        // "Time left" is the number a DJ checks before a long set, so it has to keep counting down
+        // as the file grows rather than being frozen at whatever it was when the app opened.
+        viewModelScope.launch {
+            while (true) {
+                delay(CAPACITY_POLL_MS)
+                if (engine.isRecording) refreshCapacity()
+            }
+        }
     }
 
     fun consumeNotice() = engine.consumeNotice()
@@ -154,6 +166,19 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         val input = state.selectedInput
         if (input == null) {
             _message.value = "No audio input available. Connect your mixer over USB and try again."
+            return
+        }
+
+        // A DJ mixer on the bus while the phone's own microphone is selected almost always means
+        // the routing did not take. Recording two hours of room noise is worse than not starting.
+        if (!input.isUsb && state.usbHardware.any { it.isKnownDjHardware }) {
+            _message.value =
+                "\"${input.productName}\" is not your mixer. Tap refresh and pick the USB input."
+            return
+        }
+
+        if (engine.isRecording) {
+            _message.value = "Still finishing the previous recording — try again in a moment."
             return
         }
 
@@ -236,9 +261,17 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
     fun setAutoSplitMinutes(minutes: Int) = settingsStore.update { it.copy(autoSplitMinutes = minutes) }
 
-    fun setMarkerSensitivity(value: Float) = settingsStore.update { it.copy(autoMarkerSensitivity = value) }
+    fun setMarkerSensitivity(value: Float) {
+        settingsStore.update { it.copy(autoMarkerSensitivity = value) }
+        // Tuning detection during a set is the natural time to do it, so it has to take effect now
+        // rather than at the next recording.
+        engine.updateMarkerSensitivity(value)
+    }
 
-    fun setMarkerGapSeconds(value: Float) = settingsStore.update { it.copy(autoMarkerGapSeconds = value) }
+    fun setMarkerGapSeconds(value: Float) {
+        settingsStore.update { it.copy(autoMarkerGapSeconds = value) }
+        engine.updateMarkerGapSeconds(value)
+    }
 
     fun setFileNamePrefix(prefix: String) = settingsStore.update { it.copy(fileNamePrefix = prefix) }
 
@@ -252,9 +285,12 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
      * Library writes all go through here so they land on the IO dispatcher. Each save rescans and
      * re-parses the whole directory, which janks the frame it runs on if done inline.
      */
-    private fun editLibrary(block: () -> Unit) {
+    private fun editLibrary(doneMessage: String? = null, block: () -> Unit) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { block() }
+            // Reported after the work actually happened, not before it starts.
+            doneMessage?.let { _message.value = it }
+            refreshCapacity()
         }
     }
 
@@ -269,7 +305,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         tags: String,
         notes: String,
     ) {
-        editLibrary {
+        editLibrary(doneMessage = "Details saved") {
             val renamed = if (title.isNotBlank() && title != meta.title) {
                 store.rename(meta, title)
             } else {
@@ -285,13 +321,10 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
                 )
             )
         }
-        _message.value = "Details saved"
     }
 
     fun deleteRecording(meta: RecordingMeta) {
-        editLibrary { store.delete(meta) }
-        _message.value = "Deleted \"${meta.displayTitle()}\""
-        refreshCapacity()
+        editLibrary(doneMessage = "Deleted \"${meta.displayTitle()}\"") { store.delete(meta) }
     }
 
     fun addMarkerTo(meta: RecordingMeta, positionMs: Long) = editLibrary {
@@ -342,5 +375,9 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
     fun showMessage(text: String) {
         _message.value = text
+    }
+
+    private companion object {
+        const val CAPACITY_POLL_MS = 30_000L
     }
 }
