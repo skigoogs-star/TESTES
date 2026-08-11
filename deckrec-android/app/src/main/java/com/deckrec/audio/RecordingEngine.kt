@@ -31,8 +31,11 @@ import kotlinx.coroutines.flow.update
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Captures from the selected input, runs the record bus, and streams the result to disk.
@@ -94,14 +97,40 @@ class RecordingEngine(
     @Volatile
     private var pendingManualMarker = false
 
-    private val monitoring = AtomicBoolean(false)
+    /**
+     * Bumped on every monitor start and stop. A monitor thread only touches shared state while its
+     * own generation is still current, which makes a thread that outlived its join inert rather
+     * than dangerous — the alternative is a wedged monitor waking up mid-set and overwriting the
+     * live recording's DSP chain, after which every gain and limiter control moves a dead object.
+     */
+    private val monitorGeneration = AtomicInteger(0)
     private val monitorStop = AtomicBoolean(false)
 
     @Volatile
     private var monitorThread: Thread? = null
 
+    /**
+     * Serialises monitor control off any cancellable scope. Teardown requested as the UI is being
+     * destroyed must still run: dispatching it through a ViewModel scope means cancellation can
+     * eat it and leave the microphone open in a process with no UI.
+     */
+    private val monitorControl: ExecutorService =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "DeckRec-MonitorControl").apply { isDaemon = true }
+        }
+
     private val _isMonitoring = MutableStateFlow(false)
     val isMonitoring: StateFlow<Boolean> = _isMonitoring.asStateFlow()
+
+    /** Fire-and-forget monitor start; requests are applied in the order they were made. */
+    fun requestMonitor(config: RecorderConfig) {
+        monitorControl.execute { startMonitor(config) }
+    }
+
+    /** Fire-and-forget monitor stop. Safe to call from the main thread. */
+    fun releaseMonitor() {
+        monitorControl.execute { stopMonitor() }
+    }
 
     val isRecording: Boolean get() = running.get()
 
@@ -122,10 +151,12 @@ class RecordingEngine(
         ) {
             return false
         }
-        if (!monitoring.compareAndSet(false, true)) return false
 
+        // Always supersedes: whatever was monitoring is retired before the new one opens the input.
+        retireMonitor()
+        val generation = monitorGeneration.incrementAndGet()
         monitorStop.set(false)
-        val worker = Thread({ runMonitor(config) }, "DeckRec-Monitor")
+        val worker = Thread({ runMonitor(config, generation) }, "DeckRec-Monitor")
         worker.priority = Thread.MAX_PRIORITY
         monitorThread = worker
         worker.start()
@@ -141,16 +172,33 @@ class RecordingEngine(
      */
     @Synchronized
     fun stopMonitor() {
-        monitorStop.set(true)
-        monitorThread?.let { runCatching { it.join(MONITOR_JOIN_MS) } }
-        monitorThread = null
+        retireMonitor()
     }
 
-    private fun runMonitor(config: RecorderConfig) {
+    /** Invalidates the running monitor and waits briefly for it to let go of the input. */
+    private fun retireMonitor() {
+        monitorGeneration.incrementAndGet()
+        monitorStop.set(true)
+        monitorThread?.let { worker ->
+            runCatching { worker.join(MONITOR_JOIN_MS) }
+            if (worker.isAlive) {
+                // It can no longer touch anything shared — its generation is stale — but it may
+                // still be holding the input, which is worth knowing about when REC then fails.
+                Log.w(TAG, "Monitor thread did not stop in time; it is now inert but may hold the input")
+            }
+        }
+        monitorThread = null
+        _isMonitoring.value = false
+    }
+
+    private fun runMonitor(config: RecorderConfig, generation: Int) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        fun current() = monitorGeneration.get() == generation
         var capture: Capture? = null
         try {
             capture = openCapture(config) ?: return
+            if (!current()) return
+
             val chain = DspChain(config.sampleRate).apply {
                 inputGainDb = config.inputGainDb
                 subBassAmount = config.subBassAmount
@@ -158,11 +206,12 @@ class RecordingEngine(
                 limiterEnabled = config.limiterEnabled
                 transitionDetector.enabled = false
             }
+            if (!current()) return
             dsp = chain
 
             capture.record.startRecording()
             if (capture.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) return
-            _isMonitoring.value = true
+            if (current()) _isMonitoring.value = true
 
             val framesPerRead = capture.framesPerRead
             val channels = capture.deliveredChannels
@@ -170,23 +219,27 @@ class RecordingEngine(
             val rawShorts = if (capture.isFloat) ShortArray(0) else ShortArray(framesPerRead * channels)
             val stereo = FloatArray(framesPerRead * 2)
 
-            while (!monitorStop.get() && !running.get()) {
+            while (!monitorStop.get() && !running.get() && current()) {
                 val framesRead = readFrames(capture, rawFloats, rawShorts, framesPerRead)
                 if (framesRead <= 0) break
                 deinterleave(capture, rawFloats, rawShorts, stereo, framesRead)
-                _levels.value = chain.process(stereo, framesRead)
+                val measured = chain.process(stereo, framesRead)
+                if (current()) _levels.value = measured
             }
         } catch (e: Throwable) {
             Log.w(TAG, "Monitoring stopped: ${e.message}")
         } finally {
             runCatching { capture?.record?.stop() }
             runCatching { capture?.record?.release() }
-            if (!running.get()) {
-                dsp = null
-                _levels.value = Levels()
+            // Only a monitor that is still the current one may clear shared state. A stale thread
+            // waking up here must not null the DSP chain of a recording that has since started.
+            if (current()) {
+                if (!running.get()) {
+                    dsp = null
+                    _levels.value = Levels()
+                }
+                _isMonitoring.value = false
             }
-            _isMonitoring.value = false
-            monitoring.set(false)
         }
     }
 
@@ -198,9 +251,8 @@ class RecordingEngine(
         // capture thread and fight over the same output files.
         if (!running.compareAndSet(false, true)) return false
 
-        // The monitor owns the input until it lets go; recording cannot open it underneath.
-        stopMonitor()
-
+        // Checked before tearing the monitor down: killing the meters and then refusing to start
+        // leaves the record screen dead with nothing to explain why.
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
@@ -208,6 +260,9 @@ class RecordingEngine(
             _state.value = RecorderState.Failed("Microphone permission is required to record")
             return false
         }
+
+        // The monitor owns the input until it lets go; recording cannot open it underneath.
+        stopMonitor()
 
         val newSession = Session(config)
         session = newSession

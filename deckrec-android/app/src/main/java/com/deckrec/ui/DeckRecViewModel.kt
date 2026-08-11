@@ -28,8 +28,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
@@ -154,50 +152,50 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     private var wrongInputConfirmed = false
 
     /**
-     * Serialises monitor start/stop so they run in the order they were requested.
+     * True only while the record screen is resumed and has asked for monitoring.
      *
-     * The screen's lifecycle can issue a stop and a start back to back; without this they race on
-     * the IO dispatcher and can land out of order, leaving the input open with nobody watching.
+     * Settings changes can reconfigure a monitor, but must never *start* one: nothing on the
+     * settings screen stops it again, and the engine outlives the screen, so the microphone would
+     * stay open for the life of the process.
      */
-    private val monitorMutex = Mutex()
+    private var monitorWanted = false
 
     /**
      * Runs the input through the record bus without writing, so the meters are live before REC.
      * Driven by the record screen's lifecycle so the microphone is never held in the background.
      */
     fun startMonitoring() {
-        val state = uiState.value
-        val input = state.selectedInput ?: return
-        if (engine.isRecording) return
+        monitorWanted = true
+        applyMonitor(uiState.value.selectedInput)
+    }
+
+    fun stopMonitoring() {
+        monitorWanted = false
+        // Straight to the engine, which owns a control thread of its own. Routing this through
+        // viewModelScope means teardown requested as the UI is destroyed gets cancelled before it
+        // runs, and the microphone stays open in a process with no UI left.
+        engine.releaseMonitor()
+    }
+
+    /** Reopens the monitor so a changed input, channel pair or sample rate takes effect at once. */
+    private fun restartMonitoring(input: AudioInput? = uiState.value.selectedInput) {
+        if (!monitorWanted) return
+        applyMonitor(input)
+    }
+
+    private fun applyMonitor(input: AudioInput?) {
+        if (input == null || engine.isRecording) return
         // settingsStore.current, not state.settings: uiState is a combine that recomputes
         // asynchronously, so right after changing the channel pair it still holds the old value —
         // and reopening the monitor with the pair the user just moved away from is the one thing
         // this must not do.
-        val config = settingsStore.current.toRecorderConfig(
-            deviceId = input.id,
-            deviceName = input.productName,
-            sourceChannelCount = input.maxChannelCount,
+        engine.requestMonitor(
+            settingsStore.current.toRecorderConfig(
+                deviceId = input.id,
+                deviceName = input.productName,
+                sourceChannelCount = input.maxChannelCount,
+            )
         )
-        viewModelScope.launch {
-            monitorMutex.withLock {
-                withContext(Dispatchers.IO) { engine.startMonitor(config) }
-            }
-        }
-    }
-
-    fun stopMonitoring() {
-        viewModelScope.launch {
-            monitorMutex.withLock {
-                withContext(Dispatchers.IO) { engine.stopMonitor() }
-            }
-        }
-    }
-
-    /** Reopens the monitor so a changed input, channel pair or sample rate takes effect at once. */
-    private fun restartMonitoring() {
-        if (engine.isRecording) return
-        stopMonitoring()
-        startMonitoring()
     }
 
     fun availableBytes(): Long = store.availableBytes()
@@ -310,7 +308,9 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     fun selectInput(input: AudioInput) {
         settingsStore.update { it.copy(preferredDeviceId = input.id, channelPairLeft = 0) }
         wrongInputConfirmed = false
-        restartMonitoring()
+        // The input is passed explicitly: uiState has not yet re-derived selectedInput from the
+        // id just written, so reading it back would reopen the monitor on the previous device.
+        restartMonitoring(input)
     }
 
     fun selectChannelPair(pair: ChannelPair) {

@@ -29,6 +29,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +74,12 @@ fun RecordScreen(
     LifecycleResumeEffect(state.selectedInput?.id, state.isRecording) {
         if (!state.isRecording) viewModel.startMonitoring()
         onPauseOrDispose { viewModel.stopMonitoring() }
+    }
+
+    // A failed start tears the monitor down without ever setting isRecording, so neither key above
+    // changes and the meters would stay dead — exactly when the DJ is trying to work out why.
+    LaunchedEffect(state.state) {
+        if (state.state is RecorderState.Failed) viewModel.startMonitoring()
     }
 
     Column(

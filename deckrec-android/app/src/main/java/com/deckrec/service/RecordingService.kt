@@ -59,6 +59,9 @@ class RecordingService : Service() {
 
     private var shutdownPending = false
 
+    /** The in-flight ACTION_START, so a Stop arriving during the wait can cancel it. */
+    private var startJob: kotlinx.coroutines.Job? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -120,7 +123,10 @@ class RecordingService : Service() {
         // Anything else leaves a started service that is neither foreground nor stoppable — and
         // for a mic-typed service on Android 12+, being started without going foreground in time
         // is a crash.
-        if (action != ACTION_START && !engine.isRecording) {
+        // pendingStart counts too: the "Starting…" notification carries Stop/Pause/Mark, and a
+        // start can be waiting up to twenty seconds for the previous session to drain. Treating
+        // that window as "nothing in progress" threw the user's Stop away and recorded anyway.
+        if (action != ACTION_START && !engine.isRecording && !pendingStart) {
             // A null intent (sticky restart after the process was killed) or a button press from a
             // stale notification. The session is already gone and cannot be resumed.
             Log.i(TAG, "Ignoring $action with no recording in progress")
@@ -135,7 +141,8 @@ class RecordingService : Service() {
                 startForegroundCompat(buildNotification(RecorderState.Starting, 0, 0, 0))
                 acquireWakeLock()
                 pendingStart = true
-                scope.launch {
+                startJob?.cancel()
+                startJob = scope.launch {
                     var started = false
                     try {
                         started = withContext(Dispatchers.IO) {
@@ -180,6 +187,11 @@ class RecordingService : Service() {
             }
 
             ACTION_STOP -> {
+                // Cancel a start that has not happened yet, or it would begin recording moments
+                // after the user asked everything to stop.
+                startJob?.cancel()
+                startJob = null
+                pendingStart = false
                 // stop() joins the audio and writer threads, so it must not run on the main thread.
                 scope.launch {
                     withContext(Dispatchers.IO) { engine.stop() }
@@ -253,12 +265,14 @@ class RecordingService : Service() {
     private fun scheduleShutdownRetry(cancelNotification: Boolean) {
         if (shutdownPending) return
         shutdownPending = true
+        val engine = DeckRecApp.from(this).recordingEngine
+        val elapsedAtStart = engine.progress.value.elapsedMs
         scope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     val deadline = System.currentTimeMillis() + SHUTDOWN_WAIT_MS
-                    while ((DeckRecApp.from(this@RecordingService).recordingEngine.isRecording ||
-                            pendingStart) && System.currentTimeMillis() < deadline
+                    while ((engine.isRecording || pendingStart) &&
+                        System.currentTimeMillis() < deadline
                     ) {
                         delay(100)
                     }
@@ -266,10 +280,40 @@ class RecordingService : Service() {
             } finally {
                 shutdownPending = false
             }
-            if (!DeckRecApp.from(this@RecordingService).recordingEngine.isRecording && !pendingStart) {
-                stopEverything(cancelNotification)
+
+            when {
+                !engine.isRecording && !pendingStart -> stopEverything(cancelNotification)
+
+                // Still "recording" but not a single frame in the whole window: the capture thread
+                // is wedged in a blocking read on a dead device and will never publish a terminal
+                // state, because it is the thread that would have to publish it. Without this the
+                // service stays foreground with a held wake lock until the user force-stops the app.
+                engine.progress.value.elapsedMs == elapsedAtStart -> {
+                    Log.w(TAG, "Capture appears wedged; forcing shutdown")
+                    postFinishedNotification(
+                        "Recording stopped — ${formatDuration(elapsedAtStart)} captured",
+                        "The input stopped responding. What was captured has been saved.",
+                    )
+                    forceStop()
+                }
+
+                // A new session is genuinely live; its own terminal state will drive shutdown.
+                else -> Log.i(TAG, "Abandoning shutdown: a recording is running")
             }
         }
+    }
+
+    /** Shuts down without the in-progress guard, for when waiting has already failed. */
+    private fun forceStop() {
+        releaseWakeLock()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        runCatching { NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID) }
+        stopSelfResult(latestStartId)
     }
 
     /**
