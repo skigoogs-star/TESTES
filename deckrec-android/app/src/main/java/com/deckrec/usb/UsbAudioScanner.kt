@@ -139,20 +139,38 @@ class UsbAudioScanner(context: Context) {
                     vendorId = device.vendorId,
                     productId = device.productId,
                     hasPermission = usbManager.hasPermission(device),
-                    hasAudioInterface = device.hasAudioInterface(),
+                    capability = UsbDeviceClass.classify(device.summarise()),
                 )
             }
-            .sortedByDescending { it.hasAudioInterface }
+            .sortedByDescending { it.hasAudioStreamingInterface || it.hasVendorIsochronousAudio }
 
     fun usbDeviceByName(deviceName: String): UsbDevice? = usbManager.deviceList[deviceName]
 
-    private fun UsbDevice.hasAudioInterface(): Boolean {
-        for (i in 0 until interfaceCount) {
-            if (getInterface(i).interfaceClass == UsbConstants.USB_CLASS_AUDIO) return true
+    /**
+     * Flattens the device's interfaces into the plain summaries [UsbDeviceClass] classifies.
+     *
+     * `getInterface` enumerates every (interface, alternate setting) pair, so the streaming
+     * alternate setting where the isochronous endpoints live is visible here without having to
+     * claim anything first.
+     */
+    private fun UsbDevice.summarise(): List<UsbInterfaceSummary> =
+        (0 until interfaceCount).map { index ->
+            val iface = getInterface(index)
+            var isochronousInputs = 0
+            for (e in 0 until iface.endpointCount) {
+                val endpoint = iface.getEndpoint(e)
+                if (endpoint.type == UsbConstants.USB_ENDPOINT_XFER_ISOC &&
+                    endpoint.direction == UsbConstants.USB_DIR_IN
+                ) {
+                    isochronousInputs++
+                }
+            }
+            UsbInterfaceSummary(
+                interfaceClass = iface.interfaceClass,
+                interfaceSubclass = iface.interfaceSubclass,
+                isochronousInputs = isochronousInputs,
+            )
         }
-        // Some interfaces only declare the audio class on the device descriptor.
-        return deviceClass == UsbConstants.USB_CLASS_AUDIO
-    }
 
     private fun AudioDeviceInfo.toAudioInput(): AudioInput = AudioInput(
         id = id,
@@ -181,23 +199,35 @@ data class UsbDiagnostics(
     /** Every capture endpoint the platform reports, including ones apps cannot record from. */
     val allEndpoints: List<AudioInput> = emptyList(),
 ) {
-    val audioClassDevices: List<UsbHardware> get() = busDevices.filter { it.hasAudioInterface }
+    /** Devices Android's audio HAL can actually bind — an AudioStreaming interface, not just class 1. */
+    val audioClassDevices: List<UsbHardware> get() = busDevices.filter { it.hasAudioStreamingInterface }
 
     /** Bus devices worth naming as "your mixer"; a hub or a card reader is neither. */
     val audioCapableDevices: List<UsbHardware>
-        get() = busDevices.filter { it.hasAudioInterface || it.isKnownDjHardware }
+        get() = busDevices.filter {
+            it.hasAudioStreamingInterface || it.hasVendorIsochronousAudio || it.isKnownDjHardware
+        }
 
     /**
-     * Known DJ hardware that does not advertise a USB audio interface.
+     * Hardware whose audio is on a vendor-specific interface, so Android will never route it.
      *
      * This is the Pioneer/AlphaTheta case and it is terminal for the stock audio path: the DJM and
-     * XDJ families present their PCM streams on vendor-specific interfaces (class 0xFF), which is
-     * why Linux carries hand-written endpoint quirks for them and why macOS needs a Pioneer driver.
-     * Android's UsbAlsaManager only ever binds class-compliant interfaces, so it will never create
-     * a capture endpoint for one of these, no matter what the user changes on the mixer.
+     * XDJ families put their PCM on interfaces declaring class 0xFF, which is why Linux carries
+     * hand-written endpoint quirks for them and why macOS needs a Pioneer driver. Android's
+     * UsbAlsaManager only ever binds class-compliant AudioStreaming interfaces, so no capture
+     * endpoint appears no matter what the user changes on the mixer.
+     *
+     * Note these devices *do* declare USB class 1 — for their AudioControl and MIDI interfaces —
+     * so this deliberately keys on the AudioStreaming subclass rather than the class alone.
      */
     val vendorSpecificDjHardware: List<UsbHardware>
-        get() = busDevices.filter { it.isKnownDjHardware && !it.hasAudioInterface }
+        get() = busDevices.filter {
+            !it.hasAudioStreamingInterface && (it.hasVendorIsochronousAudio || it.isKnownDjHardware)
+        }
+
+    /** The subset we could open ourselves, once the direct USB capture path is wired up. */
+    val directCaptureCandidates: List<UsbHardware>
+        get() = busDevices.filter { it.capability.needsDirectCapture }
 
     /** Something else is definitely the host — the classic wrong-port symptom. */
     val looksLikeWrongPort: Boolean
@@ -219,9 +249,12 @@ data class UsbHardware(
     val vendorId: Int,
     val productId: Int,
     val hasPermission: Boolean,
-    val hasAudioInterface: Boolean = false,
+    val capability: UsbAudioCapability = UsbAudioCapability(false, false, false, false),
 ) {
     val isKnownDjHardware: Boolean get() = vendorId in DJ_VENDOR_IDS
+
+    val hasAudioStreamingInterface: Boolean get() = capability.hasAudioStreaming
+    val hasVendorIsochronousAudio: Boolean get() = capability.hasVendorIsochronousInput
 
     fun label(): String =
         if (manufacturerName.isNotBlank() && !productName.startsWith(manufacturerName)) {
@@ -233,7 +266,16 @@ data class UsbHardware(
     fun describe(): String = buildString {
         append(label())
         append(String.format("  (VID 0x%04X PID 0x%04X)", vendorId, productId))
-        append(if (hasAudioInterface) " · audio class" else " · not audio class")
+        // Spelled out rather than reduced to "audio class": the whole diagnosis on this hardware
+        // turns on the difference between declaring class 1 and offering a stream Android can bind.
+        append(
+            when {
+                capability.hasAudioStreaming -> " · USB audio streaming"
+                capability.hasVendorIsochronousInput -> " · vendor audio (direct capture only)"
+                capability.declaresAudioClass -> " · class 1, but MIDI/control only"
+                else -> " · no audio"
+            }
+        )
         if (!hasPermission) append(" · no permission")
     }
 

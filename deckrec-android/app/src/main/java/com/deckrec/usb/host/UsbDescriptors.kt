@@ -58,6 +58,9 @@ object UsbDescriptors {
                         alternateSetting = raw.u8(o + 3),
                         endpointCount = raw.u8(o + 4),
                         interfaceClass = raw.u8(o + 5),
+                        // Subclass, not class, is what separates an AudioStreaming interface from
+                        // the AudioControl and MIDI ones a Pioneer mixer also declares.
+                        interfaceSubclass = raw.u8(o + 6),
                     )
                 }
 
@@ -89,10 +92,12 @@ object UsbDescriptors {
         val alternateSetting: Int,
         val endpointCount: Int,
         val interfaceClass: Int,
+        val interfaceSubclass: Int,
     ) {
         val endpoints = mutableListOf<EndpointDescriptor>()
         fun build() = InterfaceDescriptor(
-            number, alternateSetting, endpointCount, interfaceClass, endpoints.toList()
+            number, alternateSetting, endpointCount, interfaceClass, interfaceSubclass,
+            endpoints.toList(),
         )
     }
 
@@ -108,6 +113,7 @@ object UsbDescriptors {
         val alternateSetting: Int,
         val endpointCount: Int,
         val interfaceClass: Int,
+        val interfaceSubclass: Int,
         val endpoints: List<EndpointDescriptor>,
     ) {
         val isVendorSpecific: Boolean get() = interfaceClass == 0xFF

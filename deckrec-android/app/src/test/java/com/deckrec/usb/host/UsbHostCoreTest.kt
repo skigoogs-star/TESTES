@@ -91,6 +91,78 @@ class UsbHostCoreTest {
         assertTrue(parsed.interfaces.isEmpty())
     }
 
+    /**
+     * A real Pioneer DJM-850, transcribed from a published `lsusb -v` dump.
+     *
+     * Worth having verbatim rather than idealised, because it differs from the synthetic fixture in
+     * two ways that have both broken parsers before: its endpoint descriptors are **9 bytes** (they
+     * carry `bRefresh` and `bSynchAddress`, so a parser that assumes 7 walks straight off the
+     * rails), and it interleaves class-specific descriptors — AudioControl 0x24, MIDIStreaming 0x24
+     * and 0x25 — between the interface and endpoint descriptors we care about.
+     */
+    private fun djm850Descriptors(): ByteArray = buildDescriptors {
+        device(vendorId = 0x08E4, productId = 0x0163)
+        config(interfaceCount = 3)
+
+        // Interface 0: vendor specific, alt 0 empty, alt 1 carrying the audio.
+        iface(number = 0, alt = 0, endpoints = 0, cls = 0xFF)
+        iface(number = 0, alt = 1, endpoints = 2, cls = 0xFF)
+        audioEndpoint(address = 0x05, attributes = 0x05, maxPacket = 1024, interval = 1)
+        audioEndpoint(address = 0x86, attributes = 0x05, maxPacket = 1024, interval = 1)
+
+        // Interface 1: AudioControl, with its class-specific HEADER descriptor.
+        iface(number = 1, alt = 0, endpoints = 0, cls = 0x01, subclass = 0x01)
+        classSpecific(bytes = 9, type = 0x24)
+
+        // Interface 2: MIDIStreaming, three class-specific descriptors then a bulk endpoint.
+        iface(number = 2, alt = 0, endpoints = 1, cls = 0x01, subclass = 0x03)
+        classSpecific(bytes = 7, type = 0x24)
+        classSpecific(bytes = 6, type = 0x24)
+        classSpecific(bytes = 9, type = 0x24)
+        audioEndpoint(address = 0x87, attributes = 0x02, maxPacket = 512, interval = 0)
+        classSpecific(bytes = 5, type = 0x25)
+    }
+
+    @Test
+    fun `a real mixer's descriptors parse through the nine-byte endpoints`() {
+        val parsed = UsbDescriptors.parse(djm850Descriptors())
+
+        assertEquals(0x08E4, parsed.device?.vendorId)
+        assertEquals(0x0163, parsed.device?.productId)
+        assertEquals("two alt settings on iface 0 plus iface 1 and 2", 4, parsed.interfaces.size)
+
+        val streaming = parsed.interfaceAt(0, 1)!!
+        assertTrue(streaming.isVendorSpecific)
+        assertEquals("both endpoints found despite the 9-byte descriptors", 2, streaming.endpoints.size)
+
+        val capture = streaming.endpoints.single { it.isInput }
+        assertEquals(0x86, capture.address)
+        assertTrue(capture.isIsochronous)
+        assertEquals(1024, capture.maxPacketSize)
+
+        // The class-specific descriptors must not have been mistaken for endpoints, and the bulk
+        // MIDI endpoint must not be mistaken for an audio stream.
+        val midi = parsed.interfaceAt(2, 0)!!
+        assertEquals(1, midi.endpoints.size)
+        assertFalse(midi.endpoints.single().isIsochronous)
+        assertEquals("only the vendor interface offers a capture stream", 1, parsed.isochronousInputCandidates().size)
+    }
+
+    @Test
+    fun `the DJM-850 resolves to its documented capture stream`() {
+        val profile = UsbStreamProfile.resolve(
+            UsbDescriptors.parse(djm850Descriptors()),
+            PioneerQuirks.find(0x08E4, 0x0163),
+            preferredRate = 48000,
+        )
+        assertNotNull(profile)
+        assertEquals("DJM-850", profile!!.modelName)
+        assertEquals(0x86, profile.endpointAddress)
+        assertEquals(8, profile.channels)
+        assertEquals("the older family addresses the rate command elsewhere", 0x0086, profile.rateControlIndex)
+        assertFalse(profile.channelsAreProvisional)
+    }
+
     // ---- Stream geometry -------------------------------------------------------------------
 
     @Test
@@ -380,6 +452,76 @@ class UsbHostCoreTest {
         assertEquals(total.toLong(), read)
     }
 
+    // ---- The report ------------------------------------------------------------------------
+
+    private fun reportFor(raw: ByteArray, vendorId: Int, productId: Int): String {
+        val parsed = UsbDescriptors.parse(raw)
+        val quirk = PioneerQuirks.find(vendorId, productId)
+        return UsbInspectionReport(
+            productName = "Test unit",
+            manufacturerName = "Pioneer",
+            vendorId = vendorId,
+            productId = productId,
+            permissionGranted = true,
+            rawDescriptors = raw,
+            parsed = parsed,
+            profile = UsbStreamProfile.resolve(parsed, quirk, 48000),
+            knownModel = quirk?.name,
+            vendorProbe = UsbInspectionReport.VendorProbe(byteArrayOf(0, 4, 4, 0, 0), 5),
+            failure = null,
+        ).render()
+    }
+
+    @Test
+    fun `the report states the facts that decide whether a device can be supported`() {
+        val text = reportFor(djm850Descriptors(), 0x08E4, 0x0163)
+
+        assertTrue("the USB id must be unambiguous", text.contains("08E4:0163"))
+        assertTrue(text.contains("DJM-850"))
+        assertTrue("the vendor interface must be called out", text.contains("[vendor specific]"))
+        assertTrue("the capture endpoint must appear", text.contains("ep 0x86"))
+        assertTrue(text.contains("IN (capture)"))
+        assertTrue("Android cannot route it", text.contains("Android can route it   : no"))
+        assertTrue("but we can", text.contains("Direct capture possible: yes"))
+        assertTrue("the probe answer is data either way", text.contains("answered 5 bytes"))
+        assertTrue("raw bytes let a missing model be added later", text.contains("Raw descriptors"))
+    }
+
+    @Test
+    fun `an unknown device is reported as a guess rather than a fact`() {
+        val raw = buildDescriptors {
+            device(vendorId = 0x2B73, productId = 0x003D)
+            config(interfaceCount = 1)
+            iface(number = 0, alt = 1, endpoints = 1, cls = 0xFF)
+            audioEndpoint(address = 0x82, attributes = 0x05, maxPacket = 512, interval = 1)
+        }
+        val text = reportFor(raw, 0x2B73, 0x003D)
+
+        assertTrue(text.contains("not in the built-in table"))
+        assertTrue("an inferred channel count must never read as measured", text.contains("(GUESS)"))
+    }
+
+    @Test
+    fun `a report survives having nothing to report`() {
+        val text = UsbInspectionReport(
+            productName = "Mystery",
+            manufacturerName = "",
+            vendorId = 0x1234,
+            productId = 0x5678,
+            permissionGranted = false,
+            rawDescriptors = null,
+            parsed = null,
+            profile = null,
+            knownModel = null,
+            vendorProbe = null,
+            failure = "Permission to use the device was not granted.",
+        ).render()
+
+        assertTrue(text.contains("DENIED"))
+        assertTrue(text.contains("No descriptors could be read."))
+        assertTrue(text.contains("none found"))
+    }
+
     // ---- Descriptor blob builder -----------------------------------------------------------
 
     private fun buildDescriptors(block: DescriptorBuilder.() -> Unit): ByteArray =
@@ -401,17 +543,32 @@ class UsbHostCoreTest {
             out += listOf<Byte>(9, 0x02, 0x00, 0x00, interfaceCount.toByte(), 0x01, 0x00, 0x80.toByte(), 0x32)
         }
 
-        fun iface(number: Int, alt: Int, endpoints: Int, cls: Int) {
+        fun iface(number: Int, alt: Int, endpoints: Int, cls: Int, subclass: Int = 0) {
             out += listOf<Byte>(
                 9, 0x04, number.toByte(), alt.toByte(), endpoints.toByte(),
-                cls.toByte(), 0x00, 0x00, 0x00,
+                cls.toByte(), subclass.toByte(), 0x00, 0x00,
             )
         }
 
+        /** The 7-byte form, as used by most devices. */
         fun endpoint(address: Int, attributes: Int, maxPacket: Int, interval: Int) {
             out += listOf<Byte>(7, 0x05, address.toByte(), attributes.toByte())
             out += lo(maxPacket); out += hi(maxPacket)
             out += interval.toByte()
+        }
+
+        /** The 9-byte audio form, with bRefresh and bSynchAddress trailing. */
+        fun audioEndpoint(address: Int, attributes: Int, maxPacket: Int, interval: Int) {
+            out += listOf<Byte>(9, 0x05, address.toByte(), attributes.toByte())
+            out += lo(maxPacket); out += hi(maxPacket)
+            out += listOf<Byte>(interval.toByte(), 0x00, 0x00)
+        }
+
+        /** A class-specific descriptor the parser must step over by length alone. */
+        fun classSpecific(bytes: Int, type: Int) {
+            out += bytes.toByte()
+            out += type.toByte()
+            repeat(bytes - 2) { out += 0x00.toByte() }
         }
 
         fun bytes(): ByteArray = out.toByteArray()

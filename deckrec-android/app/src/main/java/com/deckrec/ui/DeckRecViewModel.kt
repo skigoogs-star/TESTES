@@ -20,6 +20,7 @@ import com.deckrec.usb.AudioInput
 import com.deckrec.usb.ChannelPair
 import com.deckrec.usb.UsbDiagnostics
 import com.deckrec.usb.UsbHardware
+import com.deckrec.usb.host.UsbDeviceInspector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -91,6 +92,17 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    private val inspector = UsbDeviceInspector(application)
+
+    /**
+     * The USB inspection report, when one has been asked for.
+     *
+     * Kept out of [uiState] on purpose: that combine is already at the five-flow ceiling, and this
+     * is a rare, user-initiated action rather than part of the record screen's steady state.
+     */
+    private val _inspection = MutableStateFlow<String?>(null)
+    val inspection: StateFlow<String?> = _inspection.asStateFlow()
 
     private val _remainingSeconds = MutableStateFlow(0L)
 
@@ -169,6 +181,37 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun consumeNotice() = engine.consumeNotice()
+
+    /**
+     * Reads everything the attached device will say about itself and renders it as a report.
+     *
+     * Runs in the ViewModel scope rather than the engine's: it holds no audio resources, and if the
+     * user navigates away mid-permission-dialog the cancellation is the correct outcome.
+     */
+    fun inspectUsbDevice(deviceName: String) {
+        _inspection.value = "Reading $deviceName…\n\nAccept the USB permission prompt if it appears."
+        viewModelScope.launch {
+            val report = inspector.inspect(deviceName, settingsStore.current.sampleRate)
+            _inspection.value = report.render()
+        }
+    }
+
+    fun dismissInspection() {
+        _inspection.value = null
+    }
+
+    /** Shares the report as plain text; it is a few kilobytes and needs no file behind it. */
+    fun shareInspectionIntent(): Intent? {
+        val report = _inspection.value ?: return null
+        return Intent.createChooser(
+            Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "DeckRec USB device report")
+                putExtra(Intent.EXTRA_TEXT, report)
+            },
+            "Send USB report",
+        )
+    }
 
     fun refreshDevices() {
         scanner.refresh()

@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -203,13 +206,21 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
                     "Android reports no USB host support, so no mixer can be connected directly. " +
                         "Record through the phone's own microphone, or use another phone."
 
-            state.djHardwareIsVendorSpecific ->
-                "${state.diagnostics.vendorSpecificDjHardware.first().label()} cannot be recorded this way" to
-                    "Pioneer/AlphaTheta mixers put their audio on a vendor-specific USB interface " +
-                        "rather than the standard one, which is why they need a driver on Mac and " +
-                        "Windows. Android's audio system only binds standard USB audio, so it will " +
-                        "never offer this unit as an input, whatever you change on the mixer. " +
-                        "Take the master or REC OUT into a class-compliant USB interface instead."
+            state.djHardwareIsVendorSpecific -> {
+                val device = state.diagnostics.vendorSpecificDjHardware.first()
+                val canCaptureDirectly = device.hasVendorIsochronousAudio
+                "${device.label()} needs direct USB capture" to
+                    "Pioneer/AlphaTheta gear puts its audio on a vendor-specific USB interface " +
+                        "rather than the standard one — that is why it needs a driver on Mac and " +
+                        "Windows, and why Android will never offer it as an ordinary input. " +
+                        if (canCaptureDirectly) {
+                            "It does expose an isochronous audio stream this app can open itself. " +
+                                "Tap Connection details to inspect it."
+                        } else {
+                            "No audio stream was found on it either. Tap Connection details, grant " +
+                                "USB access and send the report so this unit can be supported."
+                        }
+            }
 
             state.diagnostics.looksLikeWrongPort ->
                 "Your phone is acting as a USB device" to
@@ -250,7 +261,7 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
         }
 
         Spacer(Modifier.height(10.dp))
-        ConnectionDetails(state)
+        ConnectionDetails(state, viewModel)
 
         val failure = state.state as? RecorderState.Failed
         if (failure != null) {
@@ -283,7 +294,7 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
  * otherwise.
  */
 @Composable
-private fun ConnectionDetails(state: RecordUiState) {
+private fun ConnectionDetails(state: RecordUiState, viewModel: DeckRecViewModel) {
     var expanded by remember { mutableStateOf(false) }
 
     Text(
@@ -328,6 +339,64 @@ private fun ConnectionDetails(state: RecordUiState) {
             modifier = Modifier.padding(vertical = 1.dp),
         )
     }
+
+    // Reading a device's descriptors needs USB permission, so it cannot happen during a passive
+    // scan — it has to be something the user asks for. It is also the only way hardware missing
+    // from the built-in table can ever be supported, so it is offered for every attached device.
+    state.diagnostics.busDevices.forEach { device ->
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "▸ Inspect ${device.label()}",
+            color = DeckColors.MeterMid,
+            fontSize = 12.sp,
+            modifier = Modifier
+                .clickable { viewModel.inspectUsbDevice(device.deviceName) }
+                .padding(vertical = 4.dp),
+        )
+    }
+
+    InspectionReport(viewModel)
+}
+
+/** The descriptor report, shown in place with a way to send it on. */
+@Composable
+private fun InspectionReport(viewModel: DeckRecViewModel) {
+    val report by viewModel.inspection.collectAsStateWithLifecycle()
+    val text = report ?: return
+    val context = LocalContext.current
+
+    Spacer(Modifier.height(10.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = "Share report",
+            color = DeckColors.MeterMid,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .clickable { viewModel.shareInspectionIntent()?.let(context::startActivity) }
+                .padding(vertical = 4.dp, horizontal = 2.dp),
+        )
+        Spacer(Modifier.width(16.dp))
+        Text(
+            text = "Dismiss",
+            color = DeckColors.TextSecondary,
+            fontSize = 12.sp,
+            modifier = Modifier
+                .clickable { viewModel.dismissInspection() }
+                .padding(vertical = 4.dp, horizontal = 2.dp),
+        )
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = text,
+        color = DeckColors.TextSecondary,
+        fontSize = 9.sp,
+        fontFamily = FontFamily.Monospace,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 320.dp)
+            .verticalScroll(rememberScrollState()),
+    )
 }
 
 @Composable
