@@ -160,13 +160,7 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = if (state.hasUnroutedDjHardware) {
-                    "Your mixer is on the USB bus but Android has not exposed it as an audio input. " +
-                        "Check that the mixer's USB output is switched on and that you are using an " +
-                        "OTG cable that carries data."
-                } else {
-                    "Connect your mixer to the phone with a USB-C OTG cable, then tap the refresh icon."
-                },
+                text = "Connect your mixer to the phone with a USB-C OTG cable, then tap refresh.",
                 color = DeckColors.TextSecondary,
                 fontSize = 12.sp,
             )
@@ -196,15 +190,44 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
                 )
             }
 
-            if (state.hasUnroutedDjHardware) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "A DJ mixer is connected but is not the selected input.",
-                    color = DeckColors.MeterMid,
-                    fontSize = 12.sp,
-                )
-            }
         }
+
+        // The diagnosis, in order of what the user can actually do about it. Each branch names a
+        // different cause; "connected but no input" covers three unrelated problems otherwise.
+        val advice: Pair<String, String>? = when {
+            state.diagnostics.looksLikeWrongPort ->
+                "Your phone is acting as a USB device" to
+                    "Something else is the USB host — you are probably plugged into the mixer's " +
+                        "thumb-drive socket. Use the mixer's PC/MAC port (the square USB-B one)."
+
+            state.connectedButNotAudioClass ->
+                "Connected, but not offering audio" to
+                    "${state.diagnostics.busDevices.firstOrNull()?.label() ?: "The device"} is on " +
+                        "the USB bus but does not advertise a USB audio interface in its current " +
+                        "mode. On an all-in-one, press SOURCE and choose SOFTWARE CONTROL (PC/MAC)."
+
+            state.hasUnroutedDjHardware ->
+                "Connected, but Android has not exposed it" to
+                    "The mixer advertises USB audio, but Android has not created a recording " +
+                        "input for it. Try unplugging and replugging, or a different cable."
+
+            else -> null
+        }
+
+        advice?.let { (title, detail) ->
+            Spacer(Modifier.height(10.dp))
+            Text(text = title, color = DeckColors.MeterMid, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(2.dp))
+            Text(text = detail, color = DeckColors.TextSecondary, fontSize = 12.sp)
+        }
+
+        state.monitorStatus?.let { status ->
+            Spacer(Modifier.height(10.dp))
+            Text(text = status, color = DeckColors.MeterMid, fontSize = 12.sp)
+        }
+
+        Spacer(Modifier.height(10.dp))
+        ConnectionDetails(state)
 
         val failure = state.state as? RecorderState.Failed
         if (failure != null) {
@@ -226,6 +249,58 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
                 fontSize = 12.sp,
             )
         }
+    }
+}
+
+/**
+ * Everything the app knows about how the phone is wired up, one tap away.
+ *
+ * When nothing works, the difference between "no host mode", "device on the bus but not audio
+ * class" and "audio class but no endpoint" is the whole diagnosis, and none of it is visible
+ * otherwise.
+ */
+@Composable
+private fun ConnectionDetails(state: RecordUiState) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Text(
+        text = if (expanded) "Hide connection details" else "Connection details",
+        color = DeckColors.TextSecondary,
+        fontSize = 12.sp,
+        modifier = Modifier
+            .clickable { expanded = !expanded }
+            .padding(vertical = 4.dp),
+    )
+
+    if (!expanded) return
+
+    val lines = buildList {
+        add("USB host mode: ${if (state.diagnostics.hostSupported) "supported" else "NOT supported"}")
+        add(
+            "This phone is a USB " +
+                if (state.diagnostics.phoneIsPeripheral) "device (something else is the host)" else "host"
+        )
+        if (state.diagnostics.busDevices.isEmpty()) {
+            add("USB bus: nothing enumerated")
+        } else {
+            state.diagnostics.busDevices.forEach { add("USB: ${it.describe()}") }
+        }
+        if (state.diagnostics.allEndpoints.isEmpty()) {
+            add("Capture endpoints: none")
+        } else {
+            state.diagnostics.allEndpoints.forEach { add("In: ${it.describe()}") }
+        }
+    }
+
+    Spacer(Modifier.height(6.dp))
+    lines.forEach { line ->
+        Text(
+            text = line,
+            color = DeckColors.TextSecondary,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.padding(vertical = 1.dp),
+        )
     }
 }
 
@@ -290,12 +365,19 @@ private fun MeterCard(state: RecordUiState) {
         if (!state.isRecording) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = if (state.monitoring) {
-                    "Live — play something and set your gain before you hit REC."
-                } else {
-                    "Select an input to see levels."
+                text = when {
+                    state.monitoring -> "Live — play something and set your gain before you hit REC."
+                    state.selectedInput == null -> "Select an input to see levels."
+                    // An input is selected and still nothing is coming through: saying "select an
+                    // input" here is simply false, and sends the user looking in the wrong place.
+                    else -> state.monitorStatus
+                        ?: "No signal from ${state.selectedInput.productName}."
                 },
-                color = DeckColors.TextSecondary,
+                color = if (!state.monitoring && state.selectedInput != null) {
+                    DeckColors.MeterMid
+                } else {
+                    DeckColors.TextSecondary
+                },
                 fontSize = 11.sp,
             )
         }

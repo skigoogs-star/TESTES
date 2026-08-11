@@ -18,6 +18,7 @@ import com.deckrec.data.RecordingProgress
 import com.deckrec.service.RecordingService
 import com.deckrec.usb.AudioInput
 import com.deckrec.usb.ChannelPair
+import com.deckrec.usb.UsbDiagnostics
 import com.deckrec.usb.UsbHardware
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -34,7 +35,7 @@ import java.util.UUID
 /** Everything the record screen needs, in one snapshot. */
 data class RecordUiState(
     val inputs: List<AudioInput> = emptyList(),
-    val usbHardware: List<UsbHardware> = emptyList(),
+    val diagnostics: UsbDiagnostics = UsbDiagnostics(),
     val selectedInput: AudioInput? = null,
     val settings: AppSettings = AppSettings(),
     val state: RecorderState = RecorderState.Idle,
@@ -45,17 +46,24 @@ data class RecordUiState(
     val notice: String? = null,
     /** True while the input is open for metering but nothing is being written. */
     val monitoring: Boolean = false,
+    /** Why monitoring is not producing levels, when it is not. */
+    val monitorStatus: String? = null,
 ) {
+    val usbHardware: List<UsbHardware> get() = diagnostics.busDevices
     val isRecording: Boolean get() = state is RecorderState.Recording
     val isPaused: Boolean get() = (state as? RecorderState.Recording)?.paused == true
     val isBusy: Boolean get() = state is RecorderState.Starting || state is RecorderState.Stopping
 
     /**
-     * True when a DJ mixer is sitting on the USB bus but the audio system has not turned it into a
-     * capture endpoint — the single most common failure in the booth, and worth calling out.
+     * A USB audio device is on the bus but the audio system has not turned it into a capture
+     * endpoint — the single most common failure in the booth, and worth calling out.
      */
     val hasUnroutedDjHardware: Boolean
-        get() = usbHardware.any { it.isKnownDjHardware } && inputs.none { it.isUsb }
+        get() = diagnostics.busDevices.isNotEmpty() && inputs.none { it.isUsb }
+
+    /** The connected hardware does not even advertise an audio interface in its current mode. */
+    val connectedButNotAudioClass: Boolean
+        get() = diagnostics.busDevices.isNotEmpty() && diagnostics.audioClassDevices.isEmpty()
 
     val channelPairs: List<ChannelPair>
         get() = ChannelPair.pairsFor(selectedInput?.maxChannelCount ?: 2)
@@ -89,21 +97,26 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         ) { state, levels, progress, markers -> RecorderCore(state, levels, progress, markers) },
         engine.notice,
         engine.isMonitoring,
-    ) { core, notice, monitoring -> RecorderSnapshot(core, notice, monitoring) }
+        engine.monitorStatus,
+    ) { core, notice, monitoring, monitorStatus ->
+        RecorderSnapshot(core, notice, monitoring, monitorStatus)
+    }
 
     val uiState: StateFlow<RecordUiState> = combine(
         scanner.inputs,
-        scanner.usbAudioHardware,
+        scanner.diagnostics,
         settingsStore.settings,
         recorderSnapshot,
         _remainingSeconds,
-    ) { inputs, hardware, settings, snapshot, remaining ->
-        val selected = inputs.firstOrNull { it.id == settings.preferredDeviceId }
+    ) { inputs, diagnostics, settings, snapshot, remaining ->
+        // Matched by a stable key, not the platform id: AudioDeviceInfo ids are reassigned across
+        // replug and reboot, so a saved id can silently match completely different hardware.
+        val selected = inputs.firstOrNull { it.key() == settings.preferredDeviceKey }
             ?: inputs.firstOrNull { it.isUsb }
             ?: inputs.firstOrNull()
         RecordUiState(
             inputs = inputs,
-            usbHardware = hardware,
+            diagnostics = diagnostics,
             selectedInput = selected,
             settings = settings,
             state = snapshot.core.state,
@@ -113,6 +126,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
             remainingSeconds = remaining,
             notice = snapshot.notice,
             monitoring = snapshot.monitoring,
+            monitorStatus = snapshot.monitorStatus,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecordUiState())
 
@@ -127,6 +141,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         val core: RecorderCore,
         val notice: String?,
         val monitoring: Boolean,
+        val monitorStatus: String?,
     )
 
     init {
@@ -235,7 +250,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         // routing did not take — not just Pioneer hardware, which is all the vendor-id list knows
         // about. Warn once and let the second tap through: some mixers never expose a USB capture
         // endpoint at all, and for that user a room recording beats no recording.
-        if (!input.isUsb && state.usbHardware.isNotEmpty() && !wrongInputConfirmed) {
+        if (!input.isUsb && state.diagnostics.busDevices.isNotEmpty() && !wrongInputConfirmed) {
             wrongInputConfirmed = true
             _message.value = "\"${input.productName}\" is not a USB input. " +
                 "Tap REC again to record from it anyway."
@@ -306,7 +321,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     // ---- Settings ------------------------------------------------------------------------
 
     fun selectInput(input: AudioInput) {
-        settingsStore.update { it.copy(preferredDeviceId = input.id, channelPairLeft = 0) }
+        settingsStore.update { it.copy(preferredDeviceKey = input.key(), channelPairLeft = 0) }
         wrongInputConfirmed = false
         // The input is passed explicitly: uiState has not yet re-derived selectedInput from the
         // id just written, so reading it back would reopen the monitor on the previous device.

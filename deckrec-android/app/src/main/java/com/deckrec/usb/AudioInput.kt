@@ -2,6 +2,7 @@ package com.deckrec.usb
 
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.os.Build
 
 /**
  * A snapshot of an audio capture endpoint the platform is willing to record from.
@@ -23,6 +24,28 @@ data class AudioInput(
         get() = type == AudioDeviceInfo.TYPE_USB_DEVICE ||
             type == AudioDeviceInfo.TYPE_USB_HEADSET ||
             type == AudioDeviceInfo.TYPE_USB_ACCESSORY
+
+    /**
+     * Whether an ordinary app can actually record from this endpoint.
+     *
+     * `GET_DEVICES_INPUTS` also reports things like the telephony downlink and the echo reference,
+     * which no third-party app may open. Offering them as choices produces a phone with one
+     * microphone showing three identical-looking "Input" chips, any of which can be auto-selected
+     * and then silently fail to deliver a single frame.
+     */
+    val isRecordable: Boolean
+        get() = type !in UNRECORDABLE_TYPES
+
+    /** Stable across replug and reboot, unlike [id], which the platform reassigns. */
+    fun key(): String = "$type|$productName|$address"
+
+    fun describe(): String = buildString {
+        append("id $id · ${typeLabel()} (type $type)")
+        val rates = sampleRates.joinToString(",").ifEmpty { "any" }
+        append(" · ${rates}Hz")
+        append(" · ${channelCounts.joinToString(",").ifEmpty { "?" }}ch")
+        if (!isRecordable) append(" · not recordable")
+    }
 
     /**
      * Highest channel count the endpoint advertises. USB mixers such as the DJM series expose the
@@ -53,6 +76,14 @@ data class AudioInput(
 
     companion object {
         val DEFAULT_RATES = listOf(44100, 48000, 88200, 96000)
+
+        /** Endpoints the platform reports but will not let a normal app open. */
+        val UNRECORDABLE_TYPES = setOfNotNull(
+            AudioDeviceInfo.TYPE_TELEPHONY,
+            AudioDeviceInfo.TYPE_REMOTE_SUBMIX,
+            AudioDeviceInfo.TYPE_FM_TUNER,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AudioDeviceInfo.TYPE_ECHO_REFERENCE else null,
+        )
     }
 }
 

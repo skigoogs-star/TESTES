@@ -122,6 +122,15 @@ class RecordingEngine(
     private val _isMonitoring = MutableStateFlow(false)
     val isMonitoring: StateFlow<Boolean> = _isMonitoring.asStateFlow()
 
+    /**
+     * Why monitoring is not producing levels, or null when it is.
+     *
+     * Every early return in the monitor path used to be silent, so an input could sit selected and
+     * highlighted with dead meters and nothing anywhere saying why.
+     */
+    private val _monitorStatus = MutableStateFlow<String?>(null)
+    val monitorStatus: StateFlow<String?> = _monitorStatus.asStateFlow()
+
     /** Fire-and-forget monitor start; requests are applied in the order they were made. */
     fun requestMonitor(config: RecorderConfig) {
         monitorControl.execute { startMonitor(config) }
@@ -149,6 +158,8 @@ class RecordingEngine(
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
+            _monitorStatus.value = "Microphone permission is required — Android gates USB audio " +
+                "input behind it too."
             return false
         }
 
@@ -194,10 +205,36 @@ class RecordingEngine(
     private fun runMonitor(config: RecorderConfig, generation: Int) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         fun current() = monitorGeneration.get() == generation
+        fun status(message: String?) {
+            if (current()) _monitorStatus.value = message
+        }
+
         var capture: Capture? = null
         try {
-            capture = openCapture(config) ?: return
+            capture = openCapture(config)
+            if (capture == null) {
+                status(
+                    "${config.deviceName} would not open. If this is a DJ mixer, check that its " +
+                        "USB audio output is switched on."
+                )
+                return
+            }
             if (!current()) return
+
+            when {
+                !capture.pinnedToDevice && config.deviceId != null -> status(
+                    "Could not route from ${config.deviceName} — these levels are the phone's " +
+                        "default input, not the mixer."
+                )
+
+                !capture.honouredRequestedPair -> status(
+                    "This input would not expose channels " +
+                        "${config.channelPair.left + 1}/${config.channelPair.right + 1}; " +
+                        "showing channels 1/2."
+                )
+
+                else -> status("Waiting for audio from ${config.deviceName}…")
+            }
 
             val chain = DspChain(config.sampleRate).apply {
                 inputGainDb = config.inputGainDb
@@ -210,8 +247,12 @@ class RecordingEngine(
             dsp = chain
 
             capture.record.startRecording()
-            if (capture.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) return
+            if (capture.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                status("The input refused to start — another app may be holding it.")
+                return
+            }
             if (current()) _isMonitoring.value = true
+            var sawAudio = false
 
             val framesPerRead = capture.framesPerRead
             val channels = capture.deliveredChannels
@@ -221,13 +262,23 @@ class RecordingEngine(
 
             while (!monitorStop.get() && !running.get() && current()) {
                 val framesRead = readFrames(capture, rawFloats, rawShorts, framesPerRead)
-                if (framesRead <= 0) break
+                if (framesRead < 0) {
+                    status(readErrorMessage(framesRead))
+                    break
+                }
+                if (framesRead == 0) continue
+                // Frames are arriving, so whatever the opening status said is now obsolete.
+                if (!sawAudio) {
+                    sawAudio = true
+                    if (capture.pinnedToDevice && capture.honouredRequestedPair) status(null)
+                }
                 deinterleave(capture, rawFloats, rawShorts, stereo, framesRead)
                 val measured = chain.process(stereo, framesRead)
                 if (current()) _levels.value = measured
             }
         } catch (e: Throwable) {
             Log.w(TAG, "Monitoring stopped: ${e.message}")
+            status(e.message ?: "Monitoring stopped unexpectedly.")
         } finally {
             runCatching { capture?.record?.stop() }
             runCatching { capture?.record?.release() }

@@ -21,7 +21,8 @@ data class AppSettings(
     val autoMarkerGapSeconds: Float = 45f,
     val autoSplitMinutes: Int = 0,
     val fileNamePrefix: String = "Set",
-    val preferredDeviceId: Int? = null,
+    /** Stable identity of the chosen input; platform device ids are reassigned across replug. */
+    val preferredDeviceKey: String? = null,
     val channelPairLeft: Int = 0,
     val keepScreenOn: Boolean = true,
 ) {
@@ -85,7 +86,7 @@ class SettingsStore(context: Context) {
             autoMarkerGapSeconds = prefs.getFloat(KEY_MARKER_GAP, defaults.autoMarkerGapSeconds),
             autoSplitMinutes = prefs.getInt(KEY_AUTO_SPLIT, defaults.autoSplitMinutes),
             fileNamePrefix = prefs.getString(KEY_PREFIX, defaults.fileNamePrefix) ?: defaults.fileNamePrefix,
-            preferredDeviceId = prefs.getInt(KEY_DEVICE_ID, NO_DEVICE).takeIf { it != NO_DEVICE },
+            preferredDeviceKey = prefs.getString(KEY_DEVICE_KEY, null),
             channelPairLeft = prefs.getInt(KEY_CHANNEL_PAIR, defaults.channelPairLeft),
             keepScreenOn = prefs.getBoolean(KEY_KEEP_SCREEN_ON, defaults.keepScreenOn),
         )
@@ -105,14 +106,14 @@ class SettingsStore(context: Context) {
             putFloat(KEY_MARKER_GAP, settings.autoMarkerGapSeconds)
             putInt(KEY_AUTO_SPLIT, settings.autoSplitMinutes)
             putString(KEY_PREFIX, settings.fileNamePrefix)
-            putInt(KEY_DEVICE_ID, settings.preferredDeviceId ?: NO_DEVICE)
+            putString(KEY_DEVICE_KEY, settings.preferredDeviceKey)
             putInt(KEY_CHANNEL_PAIR, settings.channelPairLeft)
             putBoolean(KEY_KEEP_SCREEN_ON, settings.keepScreenOn)
         }.apply()
     }
 
     private companion object {
-        const val NO_DEVICE = -1
+        const val KEY_DEVICE_KEY = "deviceKey"
         const val KEY_SAMPLE_RATE = "sampleRate"
         const val KEY_FORMAT = "format"
         const val KEY_AAC_BITRATE = "aacBitrate"
@@ -125,7 +126,6 @@ class SettingsStore(context: Context) {
         const val KEY_MARKER_GAP = "markerGap"
         const val KEY_AUTO_SPLIT = "autoSplit"
         const val KEY_PREFIX = "filePrefix"
-        const val KEY_DEVICE_ID = "deviceId"
         const val KEY_CHANNEL_PAIR = "channelPair"
         const val KEY_KEEP_SCREEN_ON = "keepScreenOn"
     }
