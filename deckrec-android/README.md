@@ -36,8 +36,13 @@ cd deckrec-android
 
 The APK lands in `app/build/outputs/apk/debug/`.
 
-CI builds the same APK on every push — see `.github/workflows/android.yml` — and uploads it as a
-downloadable artifact, which is the easiest way to get an installable build without a local SDK.
+CI builds the same APK on every push — see `.github/workflows/android.yml` at the repository root
+— and uploads it as a downloadable artifact, which is the easiest way to get an installable build
+without a local SDK. The DSP regression tests run first and gate the build:
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
 
 ## Installing on a Samsung phone
 
@@ -53,7 +58,8 @@ downloadable artifact, which is the easiest way to get an installable build with
    setting in the mixer's own utility menu).
 3. Open DeckRec, tap the refresh icon in the INPUT card, and select the mixer.
 4. If the mixer has more than two channels, pick the pair carrying the master bus under
-   SOURCE CHANNELS. The meters make this obvious — the right pair moves with the music.
+   SOURCE CHANNELS. The meters run live while the record screen is open — before you hit REC —
+   so the right pair is the one that moves with the music. Set your gain here too.
 
 If the app reports that a mixer is on the USB bus but not available as an input, Android's audio
 system has not accepted it: check the cable, check that the mixer's USB output is enabled, and try

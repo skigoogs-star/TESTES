@@ -72,6 +72,8 @@ fun LabeledSlider(
     valueRange: ClosedFloatingPointRange<Float>,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    /** Called once when the drag ends, for work too expensive to do on every frame. */
+    onValueChangeFinished: (() -> Unit)? = null,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
@@ -93,6 +95,7 @@ fun LabeledSlider(
         Slider(
             value = value,
             onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished ?: {},
             valueRange = valueRange,
             enabled = enabled,
             colors = SliderDefaults.colors(

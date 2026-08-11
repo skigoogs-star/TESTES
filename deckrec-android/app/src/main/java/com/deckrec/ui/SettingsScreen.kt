@@ -21,7 +21,11 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -38,6 +42,8 @@ import com.deckrec.ui.components.InfoRow
 import com.deckrec.ui.components.LabeledSlider
 import com.deckrec.ui.components.SectionCard
 import com.deckrec.ui.theme.DeckColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 @Composable
@@ -171,9 +177,18 @@ fun SettingsScreen(
                     enabled = !locked,
                 )
                 Spacer(Modifier.height(12.dp))
+                // Local state, committed on change: binding the field straight to the settings
+                // StateFlow round-trips every keystroke through storage and back, which drops and
+                // reorders characters when typing quickly.
+                var prefix by remember(settings.fileNamePrefix.isEmpty()) {
+                    mutableStateOf(settings.fileNamePrefix)
+                }
                 OutlinedTextField(
-                    value = settings.fileNamePrefix,
-                    onValueChange = viewModel::setFileNamePrefix,
+                    value = prefix,
+                    onValueChange = {
+                        prefix = it
+                        viewModel.setFileNamePrefix(it)
+                    },
                     label = { Text("File name prefix", fontSize = 12.sp) },
                     singleLine = true,
                     enabled = !locked,
@@ -230,7 +245,12 @@ fun SettingsScreen(
             Spacer(Modifier.height(12.dp))
 
             SectionCard(title = "STORAGE") {
-                InfoRow("Free space", formatBytes(viewModel.availableBytes()))
+                // StatFs off the composition: cheap, but it re-ran on every recomposition.
+                var freeBytes by remember { mutableStateOf(0L) }
+                LaunchedEffect(state.remainingSeconds) {
+                    freeBytes = withContext(Dispatchers.IO) { viewModel.availableBytes() }
+                }
+                InfoRow("Free space", formatBytes(freeBytes))
                 InfoRow("Recording time left", formatDuration(state.remainingSeconds * 1000))
                 InfoRow("Saved sets", "${recordings.size}")
             }
