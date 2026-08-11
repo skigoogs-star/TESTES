@@ -43,6 +43,22 @@ jobs:
           cache-read-only: false
           cache-cleanup: on-success
 
+      # The native USB capture backend needs an NDK and a CMake. Neither can be downloaded here —
+      # dl.google.com is unreachable from this project's sandbox — so the build reads whatever the
+      # runner image already ships. This step is what tells us what that is, and it is permanent:
+      # when the image is trimmed and the native build breaks, the answer is already in the log.
+      - name: Toolchain sanity
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-unset}"
+          echo "ANDROID_NDK_LATEST_HOME=${ANDROID_NDK_LATEST_HOME:-unset}"
+          echo "--- $ANDROID_HOME/ndk ---";   ls -1 "$ANDROID_HOME/ndk"   2>&1 || true
+          echo "--- $ANDROID_HOME/cmake ---"; ls -1 "$ANDROID_HOME/cmake" 2>&1 || true
+          echo "--- system cmake ---"
+          command -v cmake && cmake --version || echo "no cmake on PATH"
+          echo "--- system ninja ---"
+          command -v ninja && ninja --version || echo "no ninja on PATH"
+
       - name: Start hang watchdog
         run: |
           nohup bash -c '
