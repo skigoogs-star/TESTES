@@ -11,6 +11,8 @@ jobs:
   build:
     name: Build debug APK
     runs-on: ubuntu-latest
+    # A hung Gradle would otherwise sit here for the full six-hour default before anyone noticed.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: deckrec-android
