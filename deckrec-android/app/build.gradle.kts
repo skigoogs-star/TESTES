@@ -69,4 +69,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // The DSP package is pure Kotlin, so its regressions are checked on the JVM rather than a device.
+    testImplementation("junit:junit:4.13.2")
 }
