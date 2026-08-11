@@ -114,6 +114,7 @@ class RecordingEngine(
      * again. Monitoring runs only while the record screen is on top, so it never holds the
      * microphone in the background.
      */
+    @Synchronized
     fun startMonitor(config: RecorderConfig): Boolean {
         if (running.get()) return false
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
@@ -131,7 +132,14 @@ class RecordingEngine(
         return true
     }
 
-    /** Blocks briefly while the monitor releases the input. Never call from the main thread. */
+    /**
+     * Blocks briefly while the monitor releases the input. Never call from the main thread.
+     *
+     * Synchronized with [startMonitor] so a stop and a start cannot interleave — the screen's
+     * lifecycle can issue them back to back, and an interleaved pair would leave the monitor
+     * running with its stop flag already consumed.
+     */
+    @Synchronized
     fun stopMonitor() {
         monitorStop.set(true)
         monitorThread?.let { runCatching { it.join(MONITOR_JOIN_MS) } }

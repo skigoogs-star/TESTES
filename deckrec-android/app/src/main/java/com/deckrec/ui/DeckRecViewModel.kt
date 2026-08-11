@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
@@ -152,6 +154,14 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     private var wrongInputConfirmed = false
 
     /**
+     * Serialises monitor start/stop so they run in the order they were requested.
+     *
+     * The screen's lifecycle can issue a stop and a start back to back; without this they race on
+     * the IO dispatcher and can land out of order, leaving the input open with nobody watching.
+     */
+    private val monitorMutex = Mutex()
+
+    /**
      * Runs the input through the record bus without writing, so the meters are live before REC.
      * Driven by the record screen's lifecycle so the microphone is never held in the background.
      */
@@ -159,30 +169,35 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         val state = uiState.value
         val input = state.selectedInput ?: return
         if (engine.isRecording) return
+        // settingsStore.current, not state.settings: uiState is a combine that recomputes
+        // asynchronously, so right after changing the channel pair it still holds the old value —
+        // and reopening the monitor with the pair the user just moved away from is the one thing
+        // this must not do.
+        val config = settingsStore.current.toRecorderConfig(
+            deviceId = input.id,
+            deviceName = input.productName,
+            sourceChannelCount = input.maxChannelCount,
+        )
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                engine.startMonitor(
-                    state.settings.toRecorderConfig(
-                        deviceId = input.id,
-                        deviceName = input.productName,
-                        sourceChannelCount = input.maxChannelCount,
-                    )
-                )
+            monitorMutex.withLock {
+                withContext(Dispatchers.IO) { engine.startMonitor(config) }
             }
         }
     }
 
     fun stopMonitoring() {
-        viewModelScope.launch { withContext(Dispatchers.IO) { engine.stopMonitor() } }
+        viewModelScope.launch {
+            monitorMutex.withLock {
+                withContext(Dispatchers.IO) { engine.stopMonitor() }
+            }
+        }
     }
 
     /** Reopens the monitor so a changed input, channel pair or sample rate takes effect at once. */
     private fun restartMonitoring() {
         if (engine.isRecording) return
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { engine.stopMonitor() }
-            startMonitoring()
-        }
+        stopMonitoring()
+        startMonitoring()
     }
 
     fun availableBytes(): Long = store.availableBytes()
