@@ -17,6 +17,24 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        // Every build must be signed with the SAME key, or none of them can be installed over each
+        // other. Left to itself Gradle invents a debug keystore in the build machine's home
+        // directory, and CI hands out a fresh machine per run — so each APK was signed by a
+        // different key and Android rejected every update with a bare "App not installed".
+        //
+        // These are Android's own well-known debug credentials (alias androiddebugkey, password
+        // "android"), so the checked-in file is not a secret and grants nothing: it identifies
+        // debug builds and nothing else. A store-distributed release would need a real key kept
+        // outside the repository.
+        getByName("debug") {
+            storeFile = rootProject.file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -24,6 +42,7 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
