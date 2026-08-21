@@ -8,7 +8,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # write, not read: the build publishes the APK to a rolling release so it can be installed on a
+  # phone with a plain link, instead of a zip that needs a GitHub login and a file manager.
+  contents: write
 
 concurrency:
   group: android-ci-${{ github.ref }}
@@ -118,6 +120,27 @@ jobs:
           path: deckrec-android/out/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      # A CI artifact is a zip behind a login, which is close to unusable from a phone. A release
+      # asset is a plain .apk on a URL that never changes, so "install the latest build" is one tap.
+      - name: Publish the APK to a rolling release
+        if: github.ref_name == 'claude/djm-rec-samsung-app-ixahlr'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/debug/app-debug.apk out/DeckRec-debug.apk
+          # Recreated rather than updated so the tag always points at the commit that built it.
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest out/DeckRec-debug.apk \
+            --target "$GITHUB_SHA" \
+            --title "DeckRec — latest debug build" \
+            --notes "Debug build of ${GITHUB_SHA::7}.
+
+          Android will warn that Play Protect has not seen this developer before: the APK is signed
+          with a debug key and has not been through the Play Store. To install, turn off Play Store
+          → profile → Play Protect → gear → \"Scan apps with Play Protect\", install, then turn it
+          back on."
 
       - name: Upload unit test report
         if: always()
