@@ -394,8 +394,13 @@ private fun TimeCard(state: RecordUiState) {
 
 @Composable
 private fun MeterCard(state: RecordUiState) {
+    // The source is named in the title whenever it is the phone's own microphone. Moving green
+    // bars look identical whether they come from a mixer or from the room, and only one of those
+    // is what someone opened this app to record.
     val title = when {
+        state.isRecording && state.meteringBuiltInMic -> "RECORD LEVEL · PHONE MIC"
         state.isRecording -> "RECORD LEVEL"
+        state.monitoring && state.meteringBuiltInMic -> "PHONE MIC · MONITORING"
         state.monitoring -> "INPUT LEVEL · MONITORING"
         else -> "INPUT LEVEL"
     }
@@ -410,6 +415,10 @@ private fun MeterCard(state: RecordUiState) {
             Spacer(Modifier.height(8.dp))
             Text(
                 text = when {
+                    state.monitoring && state.meteringBuiltInMic ->
+                        "This is the phone's own microphone picking up the room — not your mixer. " +
+                            "Connect the mixer over USB to record it directly."
+
                     state.monitoring -> "Live — play something and set your gain before you hit REC."
                     state.selectedInput == null -> "Select an input to see levels."
                     // An input is selected and still nothing is coming through: saying "select an
@@ -417,7 +426,7 @@ private fun MeterCard(state: RecordUiState) {
                     else -> state.monitorStatus
                         ?: "No signal from ${state.selectedInput.productName}."
                 },
-                color = if (!state.monitoring && state.selectedInput != null) {
+                color = if (state.meteringBuiltInMic || (!state.monitoring && state.selectedInput != null)) {
                     DeckColors.MeterMid
                 } else {
                     DeckColors.TextSecondary

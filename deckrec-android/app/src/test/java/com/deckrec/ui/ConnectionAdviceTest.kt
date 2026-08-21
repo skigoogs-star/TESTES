@@ -5,6 +5,7 @@ import com.deckrec.usb.AudioInput
 import com.deckrec.usb.UsbAudioCapability
 import com.deckrec.usb.UsbDiagnostics
 import com.deckrec.usb.UsbHardware
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -189,5 +190,27 @@ class ConnectionAdviceTest {
     @Test
     fun `nothing connected at all produces no advice`() {
         assertNull(state(UsbDiagnostics(hostSupported = true)).connectionAdvice())
+    }
+
+    @Test
+    fun `metering the phone's own microphone is flagged as such`() {
+        // The fallback when no mixer is available. Moving green bars look the same either way, and
+        // the difference is two hours of a room instead of a set.
+        assertTrue(state(UsbDiagnostics(hostSupported = true)).meteringBuiltInMic)
+    }
+
+    @Test
+    fun `metering a real USB input is not flagged as the phone microphone`() {
+        val usbInput = AudioInput(
+            id = 9,
+            productName = "DJM-A9",
+            type = AudioDeviceInfo.TYPE_USB_DEVICE,
+            address = "card=1;device=0",
+            sampleRates = listOf(48000),
+            channelCounts = listOf(12),
+            channelIndexMasks = emptyList(),
+            encodings = emptyList(),
+        )
+        assertFalse(state(UsbDiagnostics(hostSupported = true), inputs = listOf(usbInput)).meteringBuiltInMic)
     }
 }

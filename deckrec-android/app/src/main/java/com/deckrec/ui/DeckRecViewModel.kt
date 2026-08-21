@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Application
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -80,6 +81,17 @@ data class RecordUiState(
 
     val channelPairs: List<ChannelPair>
         get() = ChannelPair.pairsFor(selectedInput?.maxChannelCount ?: 2)
+
+    /**
+     * The levels on screen are the phone's own microphone — the room, not the mixer.
+     *
+     * With no USB input available the app falls back to a built-in mic, which is the right default
+     * (a room recording beats no recording) but is indistinguishable from a working mixer feed once
+     * the meters are moving. A DJ glancing at green bars has every reason to assume the mixer is
+     * being captured, and would find out otherwise two hours later.
+     */
+    val meteringBuiltInMic: Boolean
+        get() = selectedInput?.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
 
     /**
      * The one thing worth telling the user about how their gear is wired, or null if nothing is.
