@@ -85,7 +85,15 @@ object PioneerQuirks {
         PioneerQuirk(0x2B73, 0x0017, "DJM-250MK2", 0x82, 8, PcmEncoding.S24_3LE, R48),
         // playback ep 0x01, 10ch
         PioneerQuirk(0x2B73, 0x001B, "DJM-750MK2", 0x82, 12, PcmEncoding.S24_3LE, R48),
-        // playback ep 0x01, 12ch
+        // playback ep 0x01, 12ch.
+        //
+        // Verified against real hardware: a DJM-V10 read on a Galaxy S24 Ultra reports interface 0
+        // alt 1 as class 0xFF with exactly these two isochronous endpoints, wMaxPacketSize 1024 and
+        // bInterval 1, alongside a class 1/1 AudioControl interface, a class 1/3 MIDI interface and
+        // a HID interface. It is self-powered and declares MaxPower 0 mA, so the phone supplies it
+        // nothing. Its capture endpoint's bmAttributes is 0x05 — asynchronous, usage *data* — not
+        // the implicit-feedback usage the kernel records for the A9, so capture does not depend on
+        // a playback stream running.
         PioneerQuirk(0x2B73, 0x0034, "DJM-V10", 0x82, 12, PcmEncoding.S24_3LE, R44_48_96),
         // playback ep 0x01, 10ch
         PioneerQuirk(0x2B73, 0x003C, "DJM-A9", 0x82, 12, PcmEncoding.S24_3LE, R44_48_96),
