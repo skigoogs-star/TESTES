@@ -92,8 +92,11 @@ object PioneerQuirks {
         // bInterval 1, alongside a class 1/1 AudioControl interface, a class 1/3 MIDI interface and
         // a HID interface. It is self-powered and declares MaxPower 0 mA, so the phone supplies it
         // nothing. Its capture endpoint's bmAttributes is 0x05 — asynchronous, usage *data* — not
-        // the implicit-feedback usage the kernel records for the A9, so capture does not depend on
-        // a playback stream running.
+        // the implicit-feedback usage the kernel records for the A9, so the descriptors give no
+        // reason to expect capture depends on a playback stream. That is weaker than proof:
+        // usage bits describe how a host clocks its *playback*, and firmware that only streams
+        // capture after some other trigger would look identical here. The zero-data-packet counter
+        // is what actually settles it.
         PioneerQuirk(0x2B73, 0x0034, "DJM-V10", 0x82, 12, PcmEncoding.S24_3LE, R44_48_96),
         // playback ep 0x01, 10ch
         PioneerQuirk(0x2B73, 0x003C, "DJM-A9", 0x82, 12, PcmEncoding.S24_3LE, R44_48_96),
