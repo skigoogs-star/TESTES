@@ -209,7 +209,7 @@ class RecordingEngine(
             if (current()) _monitorStatus.value = message
         }
 
-        var capture: Capture? = null
+        var capture: CaptureSource? = null
         try {
             capture = openCapture(config)
             if (capture == null) {
@@ -246,33 +246,23 @@ class RecordingEngine(
             if (!current()) return
             dsp = chain
 
-            capture.record.startRecording()
-            if (capture.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                status("The input refused to start — another app may be holding it.")
-                return
-            }
+            capture.start()
             if (current()) _isMonitoring.value = true
             var sawAudio = false
 
             val framesPerRead = capture.framesPerRead
-            val channels = capture.deliveredChannels
-            val rawFloats = if (capture.isFloat) FloatArray(framesPerRead * channels) else FloatArray(0)
-            val rawShorts = if (capture.isFloat) ShortArray(0) else ShortArray(framesPerRead * channels)
             val stereo = FloatArray(framesPerRead * 2)
 
             while (!monitorStop.get() && !running.get() && current()) {
-                val framesRead = readFrames(capture, rawFloats, rawShorts, framesPerRead)
-                if (framesRead < 0) {
-                    status(readErrorMessage(framesRead))
-                    break
-                }
+                // A read failure throws; the catch below turns it into a monitor status. A zero is
+                // only a timeout, and means nothing has arrived yet.
+                val framesRead = capture.readStereo(stereo, framesPerRead)
                 if (framesRead == 0) continue
                 // Frames are arriving, so whatever the opening status said is now obsolete.
                 if (!sawAudio) {
                     sawAudio = true
                     if (capture.pinnedToDevice && capture.honouredRequestedPair) status(null)
                 }
-                deinterleave(capture, rawFloats, rawShorts, stereo, framesRead)
                 val measured = chain.process(stereo, framesRead)
                 if (current()) _levels.value = measured
             }
@@ -280,8 +270,7 @@ class RecordingEngine(
             Log.w(TAG, "Monitoring stopped: ${e.message}")
             status(e.message ?: "Monitoring stopped unexpectedly.")
         } finally {
-            runCatching { capture?.record?.stop() }
-            runCatching { capture?.record?.release() }
+            runCatching { capture?.close() }
             // Only a monitor that is still the current one may clear shared state. A stale thread
             // waking up here must not null the DSP chain of a recording that has since started.
             if (current()) {
@@ -445,7 +434,7 @@ class RecordingEngine(
     private fun runCapture(live: Session) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val config = live.config
-        var capture: Capture? = null
+        var capture: CaptureSource? = null
 
         try {
             capture = openCapture(config)
@@ -483,31 +472,19 @@ class RecordingEngine(
             val framesPerRead = capture.framesPerRead
             startWriter(live, framesPerRead)
 
-            capture.record.startRecording()
-            if (capture.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                throw IllegalStateException(
-                    "The input refused to start — another app may be holding it. Close other " +
-                        "recording apps, or pick a different input."
-                )
-            }
+            capture.start()
             _state.value = RecorderState.Recording(paused = false)
 
-            val sourceChannels = capture.deliveredChannels
-            val rawFloats = if (capture.isFloat) FloatArray(framesPerRead * sourceChannels) else FloatArray(0)
-            val rawShorts = if (capture.isFloat) ShortArray(0) else ShortArray(framesPerRead * sourceChannels)
             val stereo = FloatArray(framesPerRead * 2)
 
             while (!stopRequested.get() && live.failure == null) {
-                val framesRead = readFrames(capture, rawFloats, rawShorts, framesPerRead)
-                if (framesRead < 0) throw IllegalStateException(readErrorMessage(framesRead))
+                val framesRead = capture.readStereo(stereo, framesPerRead)
                 if (framesRead == 0) continue
 
                 if (paused.get()) {
                     _levels.value = Levels()
                     continue
                 }
-
-                deinterleave(capture, rawFloats, rawShorts, stereo, framesRead)
 
                 // The marker timeline is the *file* timeline, so it is only ever advanced by audio
                 // that actually reached the writer.
@@ -552,8 +529,7 @@ class RecordingEngine(
             // service and its notification would be pinned for good.
             live.captureFailure = e.message ?: "Recording failed"
         } finally {
-            runCatching { capture?.record?.stop() }
-            runCatching { capture?.record?.release() }
+            runCatching { capture?.close() }
             live.captureFinished = true
 
             // The writer owns the files; wait for it to close them before declaring the session over.
@@ -759,51 +735,6 @@ class RecordingEngine(
 
     // ---- Capture plumbing -----------------------------------------------------------------
 
-    private fun readFrames(
-        capture: Capture,
-        floats: FloatArray,
-        shorts: ShortArray,
-        framesPerRead: Int,
-    ): Int {
-        val samples = framesPerRead * capture.deliveredChannels
-        val read = if (capture.isFloat) {
-            capture.record.read(floats, 0, samples, AudioRecord.READ_BLOCKING)
-        } else {
-            capture.record.read(shorts, 0, samples, AudioRecord.READ_BLOCKING)
-        }
-        return if (read < 0) read else read / capture.deliveredChannels
-    }
-
-    /** Pulls the selected stereo pair out of whatever the device handed us. */
-    private fun deinterleave(
-        capture: Capture,
-        floats: FloatArray,
-        shorts: ShortArray,
-        out: FloatArray,
-        frames: Int,
-    ) {
-        val channels = capture.deliveredChannels
-        val left = capture.leftIndex
-        val right = capture.rightIndex
-        var outIndex = 0
-        var base = 0
-        if (capture.isFloat) {
-            repeat(frames) {
-                out[outIndex] = floats[base + left]
-                out[outIndex + 1] = floats[base + right]
-                outIndex += 2
-                base += channels
-            }
-        } else {
-            repeat(frames) {
-                out[outIndex] = shorts[base + left] * SHORT_TO_FLOAT
-                out[outIndex + 1] = shorts[base + right] * SHORT_TO_FLOAT
-                outIndex += 2
-                base += channels
-            }
-        }
-    }
-
     /**
      * Opens the best stream the device will actually give us, most capable first.
      *
@@ -811,7 +742,7 @@ class RecordingEngine(
      * we first ask the HAL for exactly the requested pair via a channel index mask, and only fall
      * back to taking every channel and slicing it ourselves if that is refused.
      */
-    private fun openCapture(config: RecorderConfig): Capture? {
+    private fun openCapture(config: RecorderConfig): CaptureSource? {
         val deviceInfo = config.deviceId?.let { scanner.deviceInfoFor(it) }
         val source = preferredAudioSource()
         val pair = config.channelPair
@@ -849,7 +780,7 @@ class RecordingEngine(
         source: Int,
         deviceInfo: AudioDeviceInfo?,
         wantsSpecificPair: Boolean,
-    ): Capture? {
+    ): CaptureSource? {
         val encoding = attempt.encoding
         val channels = attempt.channelCount
         val bytesPerSample = if (encoding == AudioFormat.ENCODING_PCM_FLOAT) 4 else 2
@@ -893,7 +824,7 @@ class RecordingEngine(
         val left = attempt.leftIndex.coerceIn(0, delivered - 1)
         val right = attempt.rightIndex.coerceIn(0, delivered - 1)
 
-        return Capture(
+        return AudioRecordSource(
             record = record,
             deliveredChannels = delivered,
             isFloat = encoding == AudioFormat.ENCODING_PCM_FLOAT,
@@ -929,13 +860,6 @@ class RecordingEngine(
         }
     }
 
-    private fun readErrorMessage(code: Int): String = when (code) {
-        AudioRecord.ERROR_INVALID_OPERATION -> "The audio stream stopped unexpectedly"
-        AudioRecord.ERROR_BAD_VALUE -> "The device rejected the capture format"
-        AudioRecord.ERROR_DEAD_OBJECT -> "The input was disconnected"
-        else -> "Audio read failed ($code)"
-    }
-
     private sealed interface Attempt {
         val encoding: Int
         val channelCount: Int
@@ -963,17 +887,6 @@ class RecordingEngine(
             override val selectsChannels: Boolean get() = false
         }
     }
-
-    private class Capture(
-        val record: AudioRecord,
-        val deliveredChannels: Int,
-        val isFloat: Boolean,
-        val leftIndex: Int,
-        val rightIndex: Int,
-        val framesPerRead: Int,
-        val honouredRequestedPair: Boolean,
-        val pinnedToDevice: Boolean,
-    )
 
     /**
      * Everything belonging to one recording session.
@@ -1026,7 +939,6 @@ class RecordingEngine(
     private companion object {
         const val TAG = "RecordingEngine"
         const val FRAMES_PER_READ = 1024
-        const val SHORT_TO_FLOAT = 1f / 32768f
         const val STOP_JOIN_MS = 8000L
         const val WRITER_JOIN_MS = 10_000L
         const val WRITER_POLL_MS = 50L

@@ -14,6 +14,53 @@ object PcmDecode {
      * full-scale positive one a hair under +1, matching how `AudioRecord` presents float audio, so
      * the limiter and the clip detector behave identically on either capture path.
      */
+    /**
+     * Decodes just two channels out of an interleaved multi-channel stream, as stereo.
+     *
+     * A DJM frame is twelve channels of which the app wants two, so decoding everything and then
+     * discarding five sixths of it would be five sixths wasted on the thread that must never fall
+     * behind. This walks the frame stride and touches only the two samples that matter.
+     */
+    fun decodePair(
+        src: ByteArray,
+        srcOffset: Int,
+        dest: FloatArray,
+        destOffset: Int,
+        frames: Int,
+        channels: Int,
+        left: Int,
+        right: Int,
+        encoding: PcmEncoding,
+    ) {
+        val width = encoding.bytesPerSample
+        val stride = channels * width
+        var frame = srcOffset
+        var out = destOffset
+        repeat(frames) {
+            dest[out] = sampleAt(src, frame + left * width, encoding)
+            dest[out + 1] = sampleAt(src, frame + right * width, encoding)
+            out += 2
+            frame += stride
+        }
+    }
+
+    private fun sampleAt(src: ByteArray, index: Int, encoding: PcmEncoding): Float = when (encoding) {
+        PcmEncoding.S24_3LE -> {
+            val v = ((src[index + 2].toInt() shl 24) or
+                ((src[index + 1].toInt() and 0xFF) shl 16) or
+                ((src[index].toInt() and 0xFF) shl 8)) shr 8
+            v * SCALE_24
+        }
+
+        PcmEncoding.S32_LE -> {
+            val v = (src[index].toInt() and 0xFF) or
+                ((src[index + 1].toInt() and 0xFF) shl 8) or
+                ((src[index + 2].toInt() and 0xFF) shl 16) or
+                (src[index + 3].toInt() shl 24)
+            v * SCALE_32
+        }
+    }
+
     fun decode(
         src: ByteArray,
         srcOffset: Int,
