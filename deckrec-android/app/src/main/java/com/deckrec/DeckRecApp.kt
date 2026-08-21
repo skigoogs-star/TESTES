@@ -8,6 +8,7 @@ import com.deckrec.audio.RecordingEngine
 import com.deckrec.data.RecordingStore
 import com.deckrec.data.SettingsStore
 import com.deckrec.usb.UsbAudioScanner
+import com.deckrec.usb.host.UsbCaptureController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,6 +35,10 @@ class DeckRecApp : Application() {
     lateinit var recordingEngine: RecordingEngine
         private set
 
+    /** Owns direct USB capture sessions, which outlive any one screen or recording. */
+    lateinit var usbCaptureController: UsbCaptureController
+        private set
+
     /** Application-lifetime scope for library bookkeeping that must not block a caller. */
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -44,7 +49,8 @@ class DeckRecApp : Application() {
         settingsStore = SettingsStore(this)
         recordingStore = RecordingStore(this)
         usbAudioScanner = UsbAudioScanner(this).apply { start() }
-        recordingEngine = RecordingEngine(this, usbAudioScanner, recordingStore)
+        usbCaptureController = UsbCaptureController(this)
+        recordingEngine = RecordingEngine(this, usbAudioScanner, recordingStore, usbCaptureController)
 
         // Scanning the library means a directory walk, a JSON parse per recording, WAV header
         // repairs and possibly a MediaMetadataRetriever per orphan. Doing that inline here delays

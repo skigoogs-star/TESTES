@@ -13,6 +13,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import com.deckrec.usb.host.PioneerQuirks
 import android.content.pm.PackageManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -64,11 +65,27 @@ class UsbAudioScanner(context: Context) {
         liveDevices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
         val all = liveDevices.map { it.toAudioInput() }
 
-        _inputs.value = all
+        val bus = scanUsbBus()
+
+        // Hardware the platform refuses to route is offered as an ordinary input anyway, because
+        // the app can open it directly. Listed first: someone who has plugged in a mixer did not
+        // do it to record the room.
+        val direct = bus.filter { it.capability.needsDirectCapture }.map { hardware ->
+            val quirk = PioneerQuirks.find(hardware.vendorId, hardware.productId)
+            AudioInput.directUsb(
+                deviceName = hardware.deviceName,
+                productName = quirk?.name ?: hardware.label(),
+                vendorId = hardware.vendorId,
+                productId = hardware.productId,
+                channels = quirk?.captureChannels ?: 2,
+                rates = quirk?.rates ?: AudioInput.DEFAULT_RATES,
+            )
+        }
+
+        _inputs.value = direct + all
             .filter { it.isRecordable }
             .sortedWith(compareByDescending<AudioInput> { it.isUsb }.thenBy { it.productName })
 
-        val bus = scanUsbBus()
         val gadget = readGadgetState()
         _diagnostics.value = UsbDiagnostics(
             hostSupported = appContext.packageManager

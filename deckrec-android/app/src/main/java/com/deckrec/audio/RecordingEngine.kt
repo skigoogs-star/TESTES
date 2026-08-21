@@ -24,6 +24,7 @@ import com.deckrec.data.RecordingMeta
 import com.deckrec.data.RecordingProgress
 import com.deckrec.data.RecordingStore
 import com.deckrec.usb.UsbAudioScanner
+import com.deckrec.usb.host.UsbCaptureController
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,6 +58,13 @@ class RecordingEngine(
     private val context: Context,
     private val scanner: UsbAudioScanner,
     private val store: RecordingStore,
+    /**
+     * Supplies already-open USB sessions for hardware the platform will not route.
+     *
+     * Only ever read here. Opening one needs a permission dialog and would block this engine's
+     * threads past their join timeouts, so it happens where the input is chosen instead.
+     */
+    private val usbCapture: UsbCaptureController? = null,
 ) {
 
     private val _state = MutableStateFlow<RecorderState>(RecorderState.Idle)
@@ -743,6 +751,18 @@ class RecordingEngine(
      * back to taking every channel and slicing it ourselves if that is refused.
      */
     private fun openCapture(config: RecorderConfig): CaptureSource? {
+        // Hardware the platform refuses to route is read straight off its USB endpoint. The session
+        // must already exist: see the constructor note on why this cannot open one itself.
+        config.usbDeviceName?.let { deviceName ->
+            val session = usbCapture?.sessionFor(deviceName)
+                ?: throw CaptureException(
+                    "Direct USB capture is not open for ${config.deviceName}. " +
+                        "Select it again to grant access."
+                )
+            Log.i(TAG, "Capturing directly from $deviceName")
+            return UsbCaptureSource(session, config.channelPair, FRAMES_PER_READ)
+        }
+
         val deviceInfo = config.deviceId?.let { scanner.deviceInfoFor(it) }
         val source = preferredAudioSource()
         val pair = config.channelPair

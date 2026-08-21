@@ -7,6 +7,8 @@ import com.deckrec.usb.ChannelPair
 data class RecorderConfig(
     val deviceId: Int? = null,
     val deviceName: String = "",
+    /** Set when the input is one the app opens itself rather than one Android routes. */
+    val usbDeviceName: String? = null,
     val sampleRate: Int = 48000,
     val sourceChannelCount: Int = 2,
     val channelPair: ChannelPair = ChannelPair.FIRST,

@@ -193,6 +193,37 @@ class ConnectionAdviceTest {
     }
 
     @Test
+    fun `an available direct-capture input is offered instead of an explanation`() {
+        val direct = AudioInput.directUsb(
+            deviceName = "/dev/bus/usb/001/004",
+            productName = "DJM-V10",
+            vendorId = 0x2B73,
+            productId = 0x0034,
+            channels = 12,
+            rates = listOf(48000),
+        )
+        val diagnostics = UsbDiagnostics(hostSupported = true, busDevices = listOf(djmV10()))
+
+        // Present but not chosen: say what to do, not why the platform cannot help.
+        val offered = RecordUiState(
+            inputs = listOf(direct, mic()),
+            diagnostics = diagnostics,
+            selectedInput = mic(),
+        ).connectionAdvice()
+        assertTrue(offered!!.title.contains("ready to record"))
+        assertTrue(offered.detail.contains("Select it above"))
+
+        // Chosen: nothing left to advise.
+        assertNull(
+            RecordUiState(
+                inputs = listOf(direct, mic()),
+                diagnostics = diagnostics,
+                selectedInput = direct,
+            ).connectionAdvice()
+        )
+    }
+
+    @Test
     fun `metering the phone's own microphone is flagged as such`() {
         // The fallback when no mixer is available. Moving green bars look the same either way, and
         // the difference is two hours of a room instead of a set.

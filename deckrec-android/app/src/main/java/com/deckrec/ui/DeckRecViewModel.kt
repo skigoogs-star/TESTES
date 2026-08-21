@@ -109,6 +109,18 @@ data class RecordUiState(
                 "Record through the phone's own microphone, or use another phone.",
         )
 
+        // Nothing to advise once the mixer is the chosen input: it is working, or its own status
+        // line is already saying why it is not.
+        selectedInput?.isDirectUsb == true -> null
+
+        // Offered but not chosen. The vendor-specific explanation below is true but no longer
+        // useful — the actionable thing is one tap away.
+        inputs.any { it.isDirectUsb } -> Advice(
+            "Your mixer is ready to record",
+            "${inputs.first { it.isDirectUsb }.productName} cannot be routed by Android, but this " +
+                "app can read it directly. Select it above to use it.",
+        )
+
         djHardwareIsVendorSpecific -> {
             val device = diagnostics.vendorSpecificDjHardware.first()
             Advice(
@@ -175,6 +187,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     val message: StateFlow<String?> = _message.asStateFlow()
 
     private val inspector = UsbDeviceInspector(application)
+    private val usbCapture = app.usbCaptureController
 
     /**
      * The USB inspection report, when one has been asked for.
@@ -344,9 +357,10 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         // this must not do.
         engine.requestMonitor(
             settingsStore.current.toRecorderConfig(
-                deviceId = input.id,
+                deviceId = input.id.takeIf { !input.isDirectUsb },
                 deviceName = input.productName,
                 sourceChannelCount = input.maxChannelCount,
+                usbDeviceName = input.usbDeviceName,
             )
         )
     }
@@ -403,9 +417,10 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
 
         val settings = state.settings
         val config = settings.toRecorderConfig(
-            deviceId = input.id,
+            deviceId = input.id.takeIf { !input.isDirectUsb },
             deviceName = input.productName,
             sourceChannelCount = input.maxChannelCount,
+            usbDeviceName = input.usbDeviceName,
         )
         RecordingService.start(getApplication(), config)
     }
@@ -467,6 +482,20 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         // moved to a different one leaves a red "refused to start" sitting above meters that are
         // demonstrably working.
         engine.clearTerminalState()
+        // Hardware the platform will not route has to be claimed from the system before anything
+        // can read it, and that needs a permission dialog — so it happens here, on a UI-driven
+        // coroutine, rather than on an engine thread that is joined with a timeout.
+        if (input.isDirectUsb) {
+            viewModelScope.launch {
+                val deviceName = input.usbDeviceName ?: return@launch
+                if (usbCapture.open(deviceName, settingsStore.current.sampleRate)) {
+                    restartMonitoring(input)
+                } else {
+                    _message.value = usbCapture.status.value
+                }
+            }
+            return
+        }
         // The input is passed explicitly: uiState has not yet re-derived selectedInput from the
         // id just written, so reading it back would reopen the monitor on the previous device.
         restartMonitoring(input)

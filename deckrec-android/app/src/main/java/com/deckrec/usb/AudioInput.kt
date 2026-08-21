@@ -18,7 +18,17 @@ data class AudioInput(
     val channelCounts: List<Int>,
     val channelIndexMasks: List<Int>,
     val encodings: List<Int>,
+    /**
+     * The USB bus path, when this input is one the app opens itself rather than one Android routes.
+     *
+     * Non-null means the platform never created a capture endpoint for this hardware and never
+     * will — its audio is on a vendor-specific interface — so the app drives the USB endpoint
+     * directly. Everything else about an [AudioInput] behaves the same either way, which is the
+     * point: the record screen shows it as an ordinary chip.
+     */
+    val usbDeviceName: String? = null,
 ) {
+    val isDirectUsb: Boolean get() = usbDeviceName != null
     val isUsb: Boolean
         get() = type == AudioDeviceInfo.TYPE_USB_DEVICE ||
             type == AudioDeviceInfo.TYPE_USB_HEADSET ||
@@ -63,7 +73,12 @@ data class AudioInput(
     fun supportsFloat(): Boolean =
         encodings.isEmpty() || encodings.contains(AudioFormat.ENCODING_PCM_FLOAT)
 
-    fun typeLabel(): String = when (type) {
+    fun typeLabel(): String = when {
+        isDirectUsb -> "USB direct"
+        else -> platformTypeLabel()
+    }
+
+    private fun platformTypeLabel(): String = when (type) {
         AudioDeviceInfo.TYPE_USB_DEVICE -> "USB audio"
         AudioDeviceInfo.TYPE_USB_HEADSET -> "USB headset"
         AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB accessory"
@@ -74,6 +89,36 @@ data class AudioInput(
     }
 
     companion object {
+        /**
+         * An input for hardware the app captures from directly.
+         *
+         * Given [AudioDeviceInfo.TYPE_USB_DEVICE] so every existing preference — sorting USB first,
+         * treating it as a real input rather than a fallback microphone — applies unchanged. The
+         * address is the vendor and product id rather than the bus path, because the path changes
+         * every time the cable is reseated and a remembered choice has to survive that.
+         */
+        fun directUsb(
+            deviceName: String,
+            productName: String,
+            vendorId: Int,
+            productId: Int,
+            channels: Int,
+            rates: List<Int>,
+        ) = AudioInput(
+            id = DIRECT_USB_ID,
+            productName = productName,
+            type = AudioDeviceInfo.TYPE_USB_DEVICE,
+            address = String.format("%04X:%04X", vendorId, productId),
+            sampleRates = rates,
+            channelCounts = listOf(channels),
+            channelIndexMasks = emptyList(),
+            encodings = emptyList(),
+            usbDeviceName = deviceName,
+        )
+
+        /** Not a platform device id; nothing may look this up in the audio system. */
+        const val DIRECT_USB_ID = -1
+
         val DEFAULT_RATES = listOf(44100, 48000, 88200, 96000)
 
         /**

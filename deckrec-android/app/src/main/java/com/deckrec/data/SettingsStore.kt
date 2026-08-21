@@ -28,9 +28,15 @@ data class AppSettings(
 ) {
     val channelPair: ChannelPair get() = ChannelPair(channelPairLeft, channelPairLeft + 1)
 
-    fun toRecorderConfig(deviceId: Int?, deviceName: String, sourceChannelCount: Int) = RecorderConfig(
+    fun toRecorderConfig(
+        deviceId: Int?,
+        deviceName: String,
+        sourceChannelCount: Int,
+        usbDeviceName: String? = null,
+    ) = RecorderConfig(
         deviceId = deviceId,
         deviceName = deviceName,
+        usbDeviceName = usbDeviceName,
         sampleRate = sampleRate,
         sourceChannelCount = sourceChannelCount,
         channelPair = channelPair,
