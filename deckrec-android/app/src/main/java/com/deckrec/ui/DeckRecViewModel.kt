@@ -114,10 +114,16 @@ data class RecordUiState(
             )
         }
 
+        // Two different sockets produce this, and naming only one of them sent a DJM-V10 owner
+        // looking for a thumb-drive slot their mixer does not have. What they share is the shape:
+        // the wrong socket is always the flat rectangular USB-A one, and the right socket is
+        // always the chunky squarish USB-B one, whatever the panel silkscreen calls it.
         diagnostics.looksLikeWrongPort -> Advice(
             "Your phone is acting as a USB device",
-            "Something else is the USB host — you are probably plugged into the mixer's " +
-                "thumb-drive socket. Use the mixer's PC/MAC port (the square USB-B one).",
+            "Something else is the USB host, so this phone can never see the mixer. You are in " +
+                "one of its flat rectangular USB-A sockets — the drive slot, or the send/return " +
+                "port meant for an iPhone. Move to the squarish, printer-shaped USB-B socket " +
+                "instead; it is often labelled PC/MAC, or USB A and USB B on a DJM-V10.",
         )
 
         connectedButNotAudioClass -> Advice(

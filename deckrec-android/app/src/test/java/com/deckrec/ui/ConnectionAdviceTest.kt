@@ -126,7 +126,10 @@ class ConnectionAdviceTest {
         ).connectionAdvice()
 
         assertTrue(advice!!.title.contains("acting as a USB device"))
-        assertTrue(advice.detail.contains("PC/MAC"))
+        // Named by connector shape, not by one mixer's silkscreen: a DJM-V10 has no thumb-drive
+        // slot, so telling its owner to leave one sent them hunting for a socket that is not there.
+        assertTrue("must name the shape to move to", advice.detail.contains("USB-B"))
+        assertTrue("and the shape to move away from", advice.detail.contains("USB-A"))
     }
 
     @Test
