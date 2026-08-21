@@ -5,9 +5,32 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+/**
+ * Picks the newest NDK or CMake already installed beside the SDK.
+ *
+ * Pinning an exact version means the build breaks the day the CI image is trimmed or bumped, and
+ * asking Gradle to fetch a specific one needs network access to dl.google.com that this project's
+ * sandbox does not have. Reading what is actually on disk avoids both.
+ */
+fun newestSdkComponent(directory: String, accept: (String) -> Boolean = { true }): String? {
+    val sdk = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT") ?: return null
+    return File(sdk, directory).listFiles()
+        ?.filter { it.isDirectory }
+        ?.map { it.name }
+        ?.filter(accept)
+        // Compared numerically, so 29.0.1 beats 9.0.1 and 3.31.5 beats 3.9.0.
+        ?.maxWithOrNull(compareBy { name ->
+            name.split('.').map { part -> part.toIntOrNull() ?: 0 }
+                .let { parts -> (parts + List(4) { 0 }).take(4) }
+                .fold(0L) { acc, part -> acc * 10_000 + part }
+        })
+}
+
 android {
     namespace = "com.deckrec"
     compileSdk = 35
+
+    newestSdkComponent("ndk")?.let { ndkVersion = it }
 
     defaultConfig {
         applicationId = "com.deckrec"
@@ -15,6 +38,23 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+
+        ndk {
+            // The only architecture this app is used on. Building the other three triples native
+            // build time and adds nothing: no 32-bit phone is going to host a 12-channel USB
+            // capture stream, and x86 targets emulators, which cannot pass through a USB mixer.
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            // Deliberately the newest 3.x rather than the newest overall: the runner image also
+            // ships CMake 4.x, which the Android Gradle Plugin does not support, so "newest" would
+            // have picked the one version guaranteed to fail.
+            newestSdkComponent("cmake") { it.startsWith("3.") }?.let { version = it }
+        }
     }
 
     signingConfigs {
