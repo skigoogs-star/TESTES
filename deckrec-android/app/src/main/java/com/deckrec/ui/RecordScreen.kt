@@ -195,64 +195,13 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
 
         }
 
-        // The diagnosis, in order of what the user can actually do about it. Each branch names a
-        // different cause; "connected but no input" covers four unrelated problems otherwise.
-        //
-        // Order is load-bearing. The vendor-specific branch must come before the generic ones,
-        // because for that hardware every other suggestion below is a wild goose chase.
-        val advice: Pair<String, String>? = when {
-            !state.diagnostics.hostSupported ->
-                "This phone cannot host USB devices" to
-                    "Android reports no USB host support, so no mixer can be connected directly. " +
-                        "Record through the phone's own microphone, or use another phone."
+        val advice = state.connectionAdvice()
 
-            state.djHardwareIsVendorSpecific -> {
-                val device = state.diagnostics.vendorSpecificDjHardware.first()
-                val canCaptureDirectly = device.hasVendorIsochronousAudio
-                "${device.label()} needs direct USB capture" to
-                    "Pioneer/AlphaTheta gear puts its audio on a vendor-specific USB interface " +
-                        "rather than the standard one — that is why it needs a driver on Mac and " +
-                        "Windows, and why Android will never offer it as an ordinary input. " +
-                        if (canCaptureDirectly) {
-                            "It does expose an isochronous audio stream this app can open itself. " +
-                                "Tap Connection details to inspect it."
-                        } else {
-                            "No audio stream was found on it either. Tap Connection details, grant " +
-                                "USB access and send the report so this unit can be supported."
-                        }
-            }
-
-            state.diagnostics.looksLikeWrongPort ->
-                "Your phone is acting as a USB device" to
-                    "Something else is the USB host — you are probably plugged into the mixer's " +
-                        "thumb-drive socket. Use the mixer's PC/MAC port (the square USB-B one)."
-
-            state.connectedButNotAudioClass ->
-                "Connected, but not offering audio" to
-                    "${state.diagnostics.audioCapableDevices.firstOrNull()?.label() ?: "The device"} " +
-                        "is on the USB bus but does not advertise a USB audio interface in its " +
-                        "current mode. On an all-in-one, press SOURCE and choose SOFTWARE CONTROL."
-
-            // Reached only when audioClassDevices is non-empty, so "advertises USB audio" is true
-            // here — see hasUnroutedDjHardware. Keep this branch below the ones above.
-            state.hasUnroutedDjHardware ->
-                "Connected, but Android has not exposed it" to
-                    "The device advertises USB audio, but Android has not created a recording " +
-                        "input for it. Try unplugging and replugging, or a different cable."
-
-            state.diagnostics.mayBeWrongPort && state.selectedInput?.isUsb != true ->
-                "Powered over USB, with nothing on the bus" to
-                    "Either this is just a charger, or you are plugged into a socket that expects " +
-                        "a USB drive. If you meant to connect a mixer, use its PC/MAC port."
-
-            else -> null
-        }
-
-        advice?.let { (title, detail) ->
+        advice?.let {
             Spacer(Modifier.height(10.dp))
-            Text(text = title, color = DeckColors.MeterMid, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(text = it.title, color = DeckColors.MeterMid, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(2.dp))
-            Text(text = detail, color = DeckColors.TextSecondary, fontSize = 12.sp)
+            Text(text = it.detail, color = DeckColors.TextSecondary, fontSize = 12.sp)
         }
 
         state.monitorStatus?.let { status ->

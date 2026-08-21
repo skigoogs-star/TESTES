@@ -485,7 +485,10 @@ class RecordingEngine(
 
             capture.record.startRecording()
             if (capture.record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                throw IllegalStateException("The input refused to start; another app may be using it")
+                throw IllegalStateException(
+                    "The input refused to start — another app may be holding it. Close other " +
+                        "recording apps, or pick a different input."
+                )
             }
             _state.value = RecorderState.Recording(paused = false)
 

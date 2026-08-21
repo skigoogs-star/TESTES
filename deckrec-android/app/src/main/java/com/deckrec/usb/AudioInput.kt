@@ -77,6 +77,27 @@ data class AudioInput(
         val DEFAULT_RATES = listOf(44100, 48000, 88200, 96000)
 
         /**
+         * Picks the input to record from: the remembered one, else a USB one, else anything usable.
+         *
+         * Pure, and separated from the ViewModel because this one decision is what a user meets on
+         * first run with hardware attached, and getting it wrong is invisible until the meters stay
+         * flat. It cost a field session once already: the endpoint list used to include things no
+         * third-party app may open — telephony, the echo reference — and one of them was auto-
+         * selected, so the app reported "the input refused to start" about the phone while a mixer
+         * sat plugged in and unmentioned.
+         *
+         * [inputs] is expected to be pre-filtered to recordable endpoints; unrecordable ones are
+         * rejected again here so a mistake upstream degrades to "no input" rather than to a
+         * selection that cannot be opened.
+         */
+        fun select(inputs: List<AudioInput>, preferredKey: String?): AudioInput? {
+            val usable = inputs.filter { it.isRecordable }
+            return usable.firstOrNull { it.key() == preferredKey }
+                ?: usable.firstOrNull { it.isUsb }
+                ?: usable.firstOrNull()
+        }
+
+        /**
          * Endpoints the platform reports but will not let a normal app open.
          *
          * The echo reference (type 28) has no public constant — it is a system API — so it is

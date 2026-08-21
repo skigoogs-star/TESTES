@@ -80,6 +80,69 @@ data class RecordUiState(
 
     val channelPairs: List<ChannelPair>
         get() = ChannelPair.pairsFor(selectedInput?.maxChannelCount ?: 2)
+
+    /**
+     * The one thing worth telling the user about how their gear is wired, or null if nothing is.
+     *
+     * Order is load-bearing and is the reason this is a function rather than a chain of `if`s in
+     * the composable: each branch below assumes the ones above it did not match. In particular the
+     * "Android has not exposed it" branch is only truthful because [connectedButNotAudioClass] was
+     * checked first, and the vendor-specific branch must precede every other, because for that
+     * hardware every other suggestion is a wild goose chase.
+     */
+    fun connectionAdvice(): Advice? = when {
+        !diagnostics.hostSupported -> Advice(
+            "This phone cannot host USB devices",
+            "Android reports no USB host support, so no mixer can be connected directly. " +
+                "Record through the phone's own microphone, or use another phone.",
+        )
+
+        djHardwareIsVendorSpecific -> {
+            val device = diagnostics.vendorSpecificDjHardware.first()
+            Advice(
+                "${device.label()} needs direct USB capture",
+                "Pioneer/AlphaTheta gear puts its audio on a vendor-specific USB interface rather " +
+                    "than the standard one — that is why it needs a driver on Mac and Windows, and " +
+                    "why Android will never offer it as an ordinary input. " +
+                    if (device.hasVendorIsochronousAudio) {
+                        "It does expose an isochronous audio stream this app can open itself. " +
+                            "Tap Connection details to inspect it."
+                    } else {
+                        "No audio stream was found on it either. Tap Connection details, grant USB " +
+                            "access and send the report so this unit can be supported."
+                    },
+            )
+        }
+
+        diagnostics.looksLikeWrongPort -> Advice(
+            "Your phone is acting as a USB device",
+            "Something else is the USB host — you are probably plugged into the mixer's " +
+                "thumb-drive socket. Use the mixer's PC/MAC port (the square USB-B one).",
+        )
+
+        connectedButNotAudioClass -> Advice(
+            "Connected, but not offering audio",
+            "${diagnostics.audioCapableDevices.firstOrNull()?.label() ?: "The device"} is on the " +
+                "USB bus but does not advertise a USB audio interface in its current mode. On an " +
+                "all-in-one, press SOURCE and choose SOFTWARE CONTROL.",
+        )
+
+        hasUnroutedDjHardware -> Advice(
+            "Connected, but Android has not exposed it",
+            "The device advertises USB audio, but Android has not created a recording input for " +
+                "it. Try unplugging and replugging, or a different cable.",
+        )
+
+        diagnostics.mayBeWrongPort && selectedInput?.isUsb != true -> Advice(
+            "Powered over USB, with nothing on the bus",
+            "Either this is just a charger, or you are plugged into a socket that expects a USB " +
+                "drive. If you meant to connect a mixer, use its PC/MAC port.",
+        )
+
+        else -> null
+    }
+
+    data class Advice(val title: String, val detail: String)
 }
 
 class DeckRecViewModel(application: Application) : AndroidViewModel(application) {
@@ -133,11 +196,7 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
         recorderSnapshot,
         _remainingSeconds,
     ) { inputs, diagnostics, settings, snapshot, remaining ->
-        // Matched by a stable key, not the platform id: AudioDeviceInfo ids are reassigned across
-        // replug and reboot, so a saved id can silently match completely different hardware.
-        val selected = inputs.firstOrNull { it.key() == settings.preferredDeviceKey }
-            ?: inputs.firstOrNull { it.isUsb }
-            ?: inputs.firstOrNull()
+        val selected = AudioInput.select(inputs, settings.preferredDeviceKey)
         RecordUiState(
             inputs = inputs,
             diagnostics = diagnostics,
@@ -216,6 +275,12 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     fun refreshDevices() {
         scanner.refresh()
         refreshCapacity()
+        // Rescan is the gesture a user reaches for when the meters are dead, so it has to actually
+        // retry. Without this it only re-listed devices: if the list came back identical the
+        // monitor was never reopened, the lifecycle key never changed, and a stale "the input
+        // refused to start" sat there unchanged no matter how many times the button was pressed.
+        engine.clearTerminalState()
+        restartMonitoring()
     }
 
     /** Set once the user has been warned about a non-USB input; the next tap goes through. */
@@ -380,6 +445,10 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     fun selectInput(input: AudioInput) {
         settingsStore.update { it.copy(preferredDeviceKey = input.key(), channelPairLeft = 0) }
         wrongInputConfirmed = false
+        // A failure belongs to the input that produced it. Leaving it on screen after the user has
+        // moved to a different one leaves a red "refused to start" sitting above meters that are
+        // demonstrably working.
+        engine.clearTerminalState()
         // The input is passed explicitly: uiState has not yet re-derived selectedInput from the
         // id just written, so reading it back would reopen the monitor on the previous device.
         restartMonitoring(input)
