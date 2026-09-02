@@ -933,6 +933,22 @@ AC.io = (function () {
     a.click();
     setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
   }
+  function selectFallback(el) {
+    if (!el) return false;
+    try { el.focus(); el.select(); return document.execCommand('copy'); }
+    catch (e) { return false; }
+  }
+  function copyText(text, fallbackEl) {
+    return new Promise(function (resolve) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(
+          function () { resolve(true); },
+          function () { resolve(selectFallback(fallbackEl)); });
+        return;
+      }
+      resolve(selectFallback(fallbackEl));
+    });
+  }
   function pickFile(accept) {
     return new Promise(function (resolve) {
       var input = AC.util.h('input', { type: 'file', accept: accept || '', style: 'position:fixed;left:-9999px' });
@@ -953,7 +969,7 @@ AC.io = (function () {
       r.readAsText(file);
     });
   }
-  return { download: download, pickFile: pickFile, readText: readText };
+  return { download: download, copyText: copyText, pickFile: pickFile, readText: readText };
 })();
 
 /* --------------------------------------------------------------------------
@@ -5113,8 +5129,34 @@ AC.screens = (function () {
   /* ---------- settings ---------- */
   function doExport(includeClips) {
     AC.store.exportJSON({ includeClips: includeClips === true }).then(function (json) {
-      AC.io.download('athletic-cut-' + U.todayKey() + '.json', json);
-      ui.toast('Backup downloaded.');
+      var name = 'athletic-cut-' + U.todayKey() + '.json';
+      var kb = Math.max(1, Math.round(json.length / 1024));
+      var box = h('textarea', { readonly: true, 'aria-label': 'Backup contents',
+        style: 'font-family:var(--font-mono);font-size:12px;min-height:110px' });
+      box.value = json;
+      var n = S().sessions.length;
+      var sh = ui.sheet({
+        title: 'Export backup',
+        body: [
+          h('p', { class: 'hint', text: kb + ' KB · ' + n + ' session' + (n === 1 ? '' : 's') +
+            '. Save the file, or copy it somewhere you will find it again.' }),
+          h('label', { class: 'field' }, box)
+        ],
+        actionsGrid: true,
+        actions: [
+          ui.btn('Copy', function () {
+            AC.io.copyText(json, box).then(function (ok) {
+              if (ok) { sh.close(); ui.toast('Backup copied to the clipboard.'); }
+              else ui.toast('Select the text above and copy it.', 4000);
+            });
+          }, 'ghost'),
+          ui.btn('Save file', function () {
+            AC.io.download(name, json);
+            sh.close();
+            ui.toast('If nothing downloaded, use Copy instead.', 4000);
+          }, 'primary')
+        ]
+      });
     });
   }
   function doImport() {
