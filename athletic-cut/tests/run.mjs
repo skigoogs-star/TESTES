@@ -954,6 +954,92 @@ console.log('\nT12  design invariants');
   await ctx.close();
 }
 
+
+/* ---------------------------------------------------------------- T13 */
+console.log('\nT13  the fixes did not break the happy paths');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  // Validation must reject junk without rejecting real backups.
+  const round = await page.evaluate(async () => {
+    AC.store.update(s => { s.nutrition['2026-08-30'] = { calories: 2600, proteinG: 195, steps: 9000 }; });
+    const json = await AC.store.exportJSON();
+    localStorage.clear(); AC.store.load();
+    const res = await AC.store.importJSON(json);
+    return { ok: res.ok, error: res.error, restored: !!AC.store.get().nutrition['2026-08-30'] };
+  });
+  ok('a real export is still accepted', round.ok === true, round.error);
+  ok('and its data comes back', round.restored);
+  const bare = await page.evaluate(async () => {
+    const r = await AC.store.importJSON(JSON.stringify(
+      { app: 'athletic-cut', state: { onboarded: true, sessions: [], metrics: [] } }));
+    AC.router.go('home'); AC.screens.render();
+    return { ok: r.ok, buttons: document.querySelectorAll('#app button').length };
+  });
+  ok('a user who has never trained can still import', bare.ok === true);
+  ok('and Home renders for them', bare.buttons > 0);
+  const fresh = await page.evaluate(() => {
+    localStorage.clear(); AC.store.load();
+    const s = AC.store.get();
+    return [s.program.days.length, s.schedule.nextRequiredIndex, Object.keys(s.exercises).length];
+  });
+  eq('a first boot still seeds everything', fresh, [5, 0, 38]);
+
+  // Day E: the program allows 5-6 rounds off one bell.
+  const kb = await page.evaluate(() => {
+    AC.engine.start('day-e', 'kb-complex'); AC.router.go('session'); AC.screens.render();
+    const blk = AC.engine.currentBlock();
+    const steppers = document.querySelectorAll('.stepper').length;
+    for (let i = 0; i < 4; i++) AC.engine.logSet();
+    const round1 = AC.store.get().activeSession.block.round;
+    AC.engine.addRound();
+    const rounds = AC.store.get().activeSession.blocks[AC.store.get().activeSession.blockIndex].rounds;
+    AC.engine.abandon();
+    return { shared: !!blk.sharedLoad, steppers, round1, rounds };
+  });
+  ok('the complex uses one shared bell', kb.shared);
+  ok('so the round shows a single load stepper', kb.steppers <= 2, 'steppers=' + kb.steppers);
+  eq('four items complete a round', kb.round1, 1);
+  eq('and a sixth round can be added', kb.rounds, 6);
+
+  // Undo across a boundary on a carry block, not just straight sets.
+  const carry = await page.evaluate(() => {
+    AC.engine.start('day-b');
+    for (let i = 0; i < 4; i++) AC.engine.nextBlock();
+    for (let i = 0; i < 4; i++) { AC.engine.logSet(); AC.engine.endRest(); }
+    const moved = AC.store.get().activeSession;
+    const movedOn = moved.blocks[moved.blockIndex].id;
+    AC.engine.undoLastSet();
+    const a = AC.store.get().activeSession;
+    return { movedOn, backIn: a.blocks[a.blockIndex].id, setIndex: a.block.setIndex,
+             trips: a.entries.filter(e => e.blockId === 'b-fin').length };
+  });
+  eq('four trips finish the carry', carry.movedOn, 'b-mob');
+  eq('undo returns to the carry', carry.backIn, 'b-fin');
+  eq('with the cursor rebuilt from the trips', carry.setIndex, 3);
+  eq('and one trip removed', carry.trips, 3);
+
+  // kg mode, end to end.
+  const kg = await page.evaluate(() => {
+    AC.engine.abandon();
+    AC.store.update(s => { s.settings.loadUnit = 'kg'; });
+    AC.engine.start('day-a'); AC.engine.nextBlock();
+    const unit = AC.store.get().activeSession.block.draft.unit;
+    AC.engine.setDraft('load', 100); AC.engine.logSet();
+    const e = AC.store.get().activeSession.entries[0];
+    const vol = AC.stats.setVolume(e, 199);
+    AC.engine.abandon();
+    AC.store.update(s => { s.settings.loadUnit = 'lb'; });
+    return { unit, inc: AC.engine.increment('barbell', 'kg'), load: e.load, loadUnit: e.loadUnit, vol: Math.round(vol) };
+  });
+  eq('the draft is in kg', kg.unit, 'kg');
+  eq('with a metric increment', kg.inc, 2.5);
+  eq('the set keeps the unit it was logged in', [kg.load, kg.loadUnit], [100, 'kg']);
+  ok('and volume converts to lb for the charts', Math.abs(kg.vol - 1102) < 5, String(kg.vol));
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 console.log('\n' + (fail ? '\x1b[31m' : '\x1b[32m') + pass + ' passed, ' + fail + ' failed\x1b[0m');
