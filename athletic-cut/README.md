@@ -44,7 +44,7 @@ thing as JSON from **More**.
 ## Tests
 
 ```
-node tests/run.mjs      # 115 checks, headless Chromium
+node tests/run.mjs      # 165 checks, headless Chromium
 node tests/shots.mjs    # screenshots of every screen into tests/shots/
 ```
 
@@ -52,6 +52,13 @@ The suite drives a complete Day A session with a keydown counter asserting zero
 keyboard events, reloads mid-session and diffs the restored state, fast-forwards
 the clock through the EMOM and sprint engines, round-trips an export, and checks
 that no tap target is under 44×44 and no button lacks an accessible name.
+
+It also pins the things that were caught in review and must not come back:
+starting another day cannot discard an in-progress session, five shapes of
+malformed backup are rejected without touching stored data, undo across a block
+boundary rewinds correctly, a Sunday-evening session in `America/Los_Angeles`
+counts toward the local week rather than the UTC one, a timed hold logs the item
+it was started for, and the second exercise of a superset shows its own cues.
 
 ## Deliberately not built
 

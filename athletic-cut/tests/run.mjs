@@ -577,6 +577,299 @@ console.log('\nT10  charts, library, accessibility');
   await ctx.close();
 }
 
+
+/* ---------------------------------------------------------------- T11 */
+console.log('\nT11  regressions from review');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+
+  // C1 — starting another day must not silently destroy logged sets
+  await page.evaluate(() => { AC.engine.start('day-a'); AC.engine.nextBlock(); });
+  await page.evaluate(() => AC.engine.logSet());
+  const guard = await page.evaluate(() => {
+    const before = AC.store.get().activeSession.entries.length;
+    const r = AC.engine.start('day-b');           // no {replace:true}
+    const a = AC.store.get().activeSession;
+    return { before, refused: r === null, dayId: a.dayId, entries: a.entries.length };
+  });
+  eq('a set was logged', guard.before, 1);
+  ok('engine.start refuses to clobber an active session', guard.refused);
+  eq('the Day A session is untouched', [guard.dayId, guard.entries], ['day-a', 1]);
+  const viaUi = await page.evaluate(async () => {
+    AC.router.go('home');
+    AC.screens.render();
+    const btn = [...document.querySelectorAll('button')].find(b => /Start a different day/i.test(b.textContent));
+    btn.click();
+    await new Promise(r => setTimeout(r, 60));
+    const row = [...document.querySelectorAll('.listrow')].find(b => /Day B/.test(b.textContent));
+    row.click();
+    await new Promise(r => setTimeout(r, 80));
+    return document.body.innerText.includes('still in progress');
+  });
+  ok('the UI asks before abandoning', viaUi);
+  await page.evaluate(() => AC.engine.abandon());
+
+  // C2 — malformed but well-marked backups are rejected, not persisted
+  const imports = await page.evaluate(async () => {
+    const bad = [
+      ['empty program', { app: 'athletic-cut', state: { program: {}, onboarded: true } }],
+      ['no schedule index', { app: 'athletic-cut', state: { schedule: { programStartDate: '2026-08-01' } } }],
+      ['stub activeSession', { app: 'athletic-cut', state: { activeSession: { dayId: 'day-a' } } }],
+      ['exercises not an object', { app: 'athletic-cut', state: { exercises: 'oops' } }],
+      ['inner future schema', { app: 'athletic-cut', schemaVersion: 1, state: { schemaVersion: 99, sessions: [] } }]
+    ];
+    const out = [];
+    for (const [name, obj] of bad) {
+      const before = JSON.stringify(AC.store.get());
+      let res;
+      try { res = await AC.store.importJSON(JSON.stringify(obj)); }
+      catch (e) { res = { ok: 'THREW', error: String(e) }; }
+      out.push({ name, ok: res.ok, unchanged: JSON.stringify(AC.store.get()) === before });
+    }
+    return out;
+  });
+  imports.forEach(r => {
+    ok('rejects ' + r.name, r.ok === false, 'ok=' + r.ok);
+    ok('leaves data untouched after ' + r.name, r.unchanged);
+  });
+  const recovers = await page.evaluate(() => {
+    AC.store.update(s => { s.program = { days: [], requiredDayIds: [], optionalDayId: 'x' }; });
+    AC.router.go('home');
+    AC.screens.render();
+    return document.querySelectorAll('#app button').length;
+  });
+  ok('a broken program still renders a way out', recovers > 0, String(recovers));
+  await ctx.close();
+}
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+
+  // M1/M6 — undo across a block boundary, and prevBlock keeping entries
+  const undo = await page.evaluate(async () => {
+    const gap = () => new Promise(r => setTimeout(r, 450));   // clear the double-tap guard
+    AC.engine.start('day-a');
+    AC.engine.nextBlock();                       // into the main lift
+    for (let i = 0; i < 4; i++) { AC.engine.logSet(); AC.engine.endRest(); await gap(); }
+    const afterBlock = AC.store.get().activeSession;
+    const wasIn = afterBlock.blocks[afterBlock.blockIndex].id;
+    AC.engine.undoLastSet();
+    const a = AC.store.get().activeSession;
+    return {
+      wasIn,
+      backIn: a.blocks[a.blockIndex].id,
+      entries: a.entries.length,
+      setIndex: a.block.setIndex
+    };
+  });
+  eq('four sets finish the block', undo.wasIn, 'a-ss');
+  eq('undo steps back into the main lift', undo.backIn, 'a-main');
+  eq('the set is removed', undo.entries, 3);
+  eq('the counter matches the entries', undo.setIndex, 3);
+  const prev = await page.evaluate(async () => {
+    await new Promise(r => setTimeout(r, 450));
+    AC.engine.logSet(); AC.engine.endRest();     // that completes the block -> superset
+    AC.engine.prevBlock();                        // step back into the main lift
+    const a = AC.store.get().activeSession;
+    return { blockId: a.blocks[a.blockIndex].id, setIndex: a.block.setIndex,
+             entries: a.entries.filter(e => e.blockId === 'a-main').length };
+  });
+  eq('prevBlock lands back in the main lift', prev.blockId, 'a-main');
+  eq('prevBlock keeps the logged sets', prev.entries, 4);
+  eq('and restores the cursor to match', prev.setIndex, 4);
+  await page.evaluate(() => AC.engine.abandon());
+
+  // M2 — what the stepper shows is what gets logged
+  const drafts = await page.evaluate(() => {
+    AC.engine.start('day-d');
+    for (let i = 0; i < 3; i++) AC.engine.nextBlock();   // to the get-up finisher
+    const shownBell = AC.store.get().activeSession.block.draft.load;
+    AC.engine.logSet();
+    const kb = AC.store.get().activeSession.entries.slice(-1)[0];
+    AC.engine.abandon();
+    AC.engine.start('day-b');
+    for (let i = 0; i < 3; i++) AC.engine.nextBlock();   // superset B, dips first
+    AC.engine.logSet();
+    const dip = AC.store.get().activeSession.entries.slice(-1)[0];
+    AC.engine.abandon();
+    return { shownBell, kbLoad: kb.load, dipReps: dip.reps, dipId: dip.exerciseId };
+  });
+  eq('the kettlebell draft starts at a real bell', drafts.shownBell, 24);
+  eq('and logs that bell, not zero', drafts.kbLoad, 24);
+  eq('the AMRAP slot is dips', drafts.dipId, 'dip');
+  eq('and logs a number, not null', drafts.dipReps, 0);
+
+  // M3 — bodyweight slots still show last time, and the pull-up rule can fire
+  const bw = await page.evaluate(() => {
+    AC.store.update(s => {
+      s.sessions.push({ id: 'bw1', dayId: 'day-a', startedAt: '2026-08-20T10:00:00.000Z',
+        completedAt: '2026-08-20T11:00:00.000Z', dateKey: '2026-08-20', status: 'complete',
+        sessionRPE: 8, bodyweightAtTime: 199, notes: '', blockResults: [], totals: {}, beatLast: [],
+        entries: [{ blockId: 'a-ss', slotId: 'a-ss-2', exerciseId: 'hanging-leg-raise', setIndex: 0,
+          load: null, loadUnit: 'lb', reps: 12, rpe: null, seconds: null, distanceM: null, isWarmup: false,
+          completedAt: '2026-08-20T10:30:00.000Z' },
+          { blockId: 'b-main', slotId: 'b-main-1', exerciseId: 'pull-up', setIndex: 0,
+          load: null, loadUnit: 'lb', reps: 11, rpe: null, seconds: null, distanceM: null, isWarmup: false,
+          completedAt: '2026-08-20T10:40:00.000Z' }] });
+    });
+    const hlr = AC.engine.suggestLoad({ exerciseId: 'hanging-leg-raise', loadType: 'bodyweight',
+      repsTarget: { kind: 'reps', min: 10, max: 12 }, substitutions: [] });
+    const pu = AC.engine.suggestLoad({ exerciseId: 'pull-up', loadType: 'bodyweight',
+      repsTarget: { kind: 'amrap' }, weightThreshold: 10, substitutions: [] });
+    return { hlrReps: hlr.last && hlr.last.reps, puFlag: pu.suggested, puReason: pu.reason };
+  });
+  eq('a bodyweight exercise remembers last time', bw.hlrReps, 12);
+  ok('clearing 10 bodyweight pull-ups suggests adding weight', bw.puFlag, bw.puReason);
+  ok('and says why', /Cleared 10/.test(bw.puReason), bw.puReason);
+
+  // m1/m2 — abandoned sessions and unit switches must not poison the suggestion
+  const sugg = await page.evaluate(() => {
+    const slot = { exerciseId: 'trap-bar-deadlift', loadType: 'barbell',
+      repsTarget: { kind: 'reps', min: 5, max: 7 }, substitutions: [] };
+    AC.store.update(s => {
+      s.sessions = [
+        { id: 'c1', dayId: 'day-a', startedAt: '', completedAt: '2026-08-20T11:00:00.000Z',
+          dateKey: '2026-08-20', status: 'complete', entries: [{ exerciseId: 'trap-bar-deadlift',
+          load: 245, loadUnit: 'lb', reps: 5, rpe: 8, isWarmup: false, setIndex: 0, seconds: null, distanceM: null }],
+          sessionRPE: 8, bodyweightAtTime: 199, notes: '', blockResults: [], totals: {}, beatLast: [] },
+        { id: 'a1', dayId: 'day-a', startedAt: '', completedAt: '2026-08-22T11:00:00.000Z',
+          dateKey: '2026-08-22', status: 'abandoned', entries: [{ exerciseId: 'trap-bar-deadlift',
+          load: 135, loadUnit: 'lb', reps: 5, rpe: 8, isWarmup: false, setIndex: 0, seconds: null, distanceM: null }],
+          sessionRPE: null, bodyweightAtTime: 199, notes: '', blockResults: [], totals: {}, beatLast: [] }];
+    });
+    const lb = AC.engine.suggestLoad(slot).load;
+    AC.store.update(s => { s.settings.loadUnit = 'kg'; });
+    const kg = AC.engine.suggestLoad(slot).load;
+    AC.store.update(s => { s.settings.loadUnit = 'lb'; });
+    return { lb, kg };
+  });
+  eq('an abandoned session does not override a completed one', sugg.lb, 245);
+  ok('switching to kg converts rather than reinterprets', Math.abs(sugg.kg - 111.1) < 3, String(sugg.kg));
+  await ctx.close();
+}
+{
+  // M4 — a Sunday-evening session belongs to the local week, not the UTC one
+  const { ctx, page } = await newPage({ timezoneId: 'America/Los_Angeles' });
+  await page.clock.install({ time: new Date('2026-09-06T21:00:00-07:00') });
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const tz = await page.evaluate(() => {
+    AC.engine.start('day-a');
+    AC.engine.nextBlock();
+    AC.engine.logSet();
+    const log = AC.engine.complete({ sessionRPE: 7 });
+    return {
+      completedAtUtcDay: log.completedAt.slice(0, 10),
+      localDay: AC.util.todayKey(),
+      dateKey: log.dateKey,
+      sessionDay: AC.stats.sessionDay(log),
+      trained: AC.stats.daysTrainedThisWeek(),
+      weeks: AC.stats.weeklyVolume().map(w => w.week),
+      thisWeek: AC.util.isoWeekKey(AC.util.todayKey())
+    };
+  });
+  eq('the UTC instant really is the next day', tz.completedAtUtcDay, '2026-09-07');
+  eq('but the session is stamped with the local day', tz.dateKey, tz.localDay);
+  eq('and reads back as that day', tz.sessionDay, '2026-09-06');
+  eq('so it counts toward this week', tz.trained, 1);
+  eq('and lands in this week\'s volume', tz.weeks, [tz.thisWeek]);
+  await ctx.close();
+}
+{
+  const { ctx, page } = await newPage();
+  await page.clock.install();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+
+  // M5 — a hold shows a clock and logs only the item it was started for
+  await page.evaluate(() => { AC.engine.start('day-c'); AC.engine.nextBlock(); AC.engine.nextBlock(); AC.router.go('session'); });
+  await page.waitForSelector('.runner');
+  await page.evaluate(() => {          // advance to the side plank (the timed item)
+    AC.engine.logSet();
+  });
+  await page.waitForTimeout(500);
+  await page.evaluate(() => { AC.engine.logSet(); AC.screens.render(); });
+  await page.waitForTimeout(80);
+  await page.getByRole('button', { name: /Start 30s hold/i }).click();
+  await page.waitForTimeout(60);
+  ok('the hold shows a countdown dial', (await page.locator('.dial').count()) === 1);
+  ok('and Log is out of reach while it runs',
+    (await page.getByRole('button', { name: /^Log/i }).count()) === 0);
+  const holdOwner = await page.evaluate(() => AC.store.get().activeSession.timer.slotId);
+  eq('the hold is bound to its own slot', holdOwner, 'c-rot-3');
+  await page.clock.runFor(31_000);
+  await page.waitForTimeout(60);
+  const held = await page.evaluate(() => {
+    const a = AC.store.get().activeSession;
+    const last = a.entries[a.entries.length - 1];
+    return { id: last.exerciseId, seconds: last.seconds };
+  });
+  eq('and logs the side plank, not the next item', held.id, 'side-plank');
+  eq('with its duration', held.seconds, 30);
+  await ctx.close();
+}
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+
+  // Design C1 — exercise B must show B's cues
+  await page.evaluate(() => {
+    AC.engine.start('day-a'); AC.engine.nextBlock(); AC.engine.nextBlock();
+    AC.engine.endRest(); AC.router.go('session');
+  });
+  await page.waitForSelector('.runner');
+  const cueA = await page.locator('.cuestrip li').first().innerText();
+  await page.getByRole('button', { name: /^Log/i }).click();
+  await page.waitForTimeout(60);
+  const nameB = await page.locator('.ex-name').innerText();
+  const cueB = await page.locator('.cuestrip li').first().innerText();
+  ok('round 1 starts on the split squat', /Front shin/.test(cueA), cueA);
+  eq('then moves to the leg raise', nameB.trim(), 'Hanging leg raise');
+  ok('with the leg raise\'s own cues', /ribs down/i.test(cueB), cueB);
+
+  // Design M2 — an RPE chip does not toggle itself off
+  const rpe = await page.evaluate(() => {
+    AC.engine.abandon(); AC.engine.start('day-a'); AC.engine.nextBlock(); AC.screens.render();
+    const chip = [...document.querySelectorAll('[role=radio]')].find(c => c.textContent === '8');
+    chip.click(); const first = AC.store.get().activeSession.block.draft.rpe;
+    chip.click(); const second = AC.store.get().activeSession.block.draft.rpe;
+    return { first, second };
+  });
+  eq('tapping RPE 8 selects it', rpe.first, 8);
+  eq('tapping it again keeps it selected', rpe.second, 8);
+
+  // Design C3 — each nutrition bar is measured against its own target
+  const bars = await page.evaluate(() => {
+    AC.engine.abandon();
+    AC.store.update(s => {
+      for (let i = 0; i < 7; i++) {
+        s.nutrition[AC.util.addDays(AC.util.todayKey(), -i)] = { calories: 2650, proteinG: 195, steps: 8500 };
+      }
+    });
+    AC.router.go('nutrition'); AC.screens.render();
+    return [...document.querySelectorAll('.meter i')].map(el => parseFloat(el.style.width));
+  });
+  ok('protein at 195/200 fills most of its bar', bars[1] > 90, JSON.stringify(bars));
+  ok('calories at target fill their bar', bars[0] >= 99, JSON.stringify(bars));
+
+  // Design C4 — a new screen starts at the top
+  const scroll = await page.evaluate(async () => {
+    AC.router.go('progress'); AC.screens.render();
+    window.scrollTo(0, 600);
+    const before = window.scrollY;
+    AC.router.go('body'); AC.screens.render();
+    await new Promise(r => setTimeout(r, 30));
+    return { before, after: window.scrollY };
+  });
+  ok('the previous screen was scrolled', scroll.before > 0, String(scroll.before));
+  eq('the new screen opens at the top', scroll.after, 0);
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 console.log('\n' + (fail ? '\x1b[31m' : '\x1b[32m') + pass + ' passed, ' + fail + ' failed\x1b[0m');
