@@ -44,7 +44,7 @@ thing as JSON from **More**.
 ## Tests
 
 ```
-node tests/run.mjs      # 165 checks, headless Chromium
+node tests/run.mjs      # 173 checks, headless Chromium
 node tests/shots.mjs    # screenshots of every screen into tests/shots/
 ```
 
@@ -59,6 +59,9 @@ malformed backup are rejected without touching stored data, undo across a block
 boundary rewinds correctly, a Sunday-evening session in `America/Los_Angeles`
 counts toward the local week rather than the UTC one, a timed hold logs the item
 it was started for, and the second exercise of a superset shows its own cues.
+It also asserts the drawing invariants directly: no stick figure may change a
+limb's length between its two frames, and the light theme must resolve the
+darker amber used for non-text graphics.
 
 ## Deliberately not built
 

@@ -649,11 +649,10 @@ console.log('\nT11  regressions from review');
   await tap(page, /Begin week 1/i);
 
   // M1/M6 — undo across a block boundary, and prevBlock keeping entries
-  const undo = await page.evaluate(async () => {
-    const gap = () => new Promise(r => setTimeout(r, 450));   // clear the double-tap guard
+  const undo = await page.evaluate(() => {
     AC.engine.start('day-a');
     AC.engine.nextBlock();                       // into the main lift
-    for (let i = 0; i < 4; i++) { AC.engine.logSet(); AC.engine.endRest(); await gap(); }
+    for (let i = 0; i < 4; i++) { AC.engine.logSet(); AC.engine.endRest(); }
     const afterBlock = AC.store.get().activeSession;
     const wasIn = afterBlock.blocks[afterBlock.blockIndex].id;
     AC.engine.undoLastSet();
@@ -669,8 +668,7 @@ console.log('\nT11  regressions from review');
   eq('undo steps back into the main lift', undo.backIn, 'a-main');
   eq('the set is removed', undo.entries, 3);
   eq('the counter matches the entries', undo.setIndex, 3);
-  const prev = await page.evaluate(async () => {
-    await new Promise(r => setTimeout(r, 450));
+  const prev = await page.evaluate(() => {
     AC.engine.logSet(); AC.engine.endRest();     // that completes the block -> superset
     AC.engine.prevBlock();                        // step back into the main lift
     const a = AC.store.get().activeSession;
@@ -788,10 +786,8 @@ console.log('\nT11  regressions from review');
   await page.evaluate(() => { AC.engine.start('day-c'); AC.engine.nextBlock(); AC.engine.nextBlock(); AC.router.go('session'); });
   await page.waitForSelector('.runner');
   await page.evaluate(() => {          // advance to the side plank (the timed item)
-    AC.engine.logSet();
+    AC.engine.logSet(); AC.engine.logSet(); AC.screens.render();
   });
-  await page.waitForTimeout(500);
-  await page.evaluate(() => { AC.engine.logSet(); AC.screens.render(); });
   await page.waitForTimeout(80);
   await page.getByRole('button', { name: /Start 30s hold/i }).click();
   await page.waitForTimeout(60);
@@ -867,6 +863,94 @@ console.log('\nT11  regressions from review');
   });
   ok('the previous screen was scrolled', scroll.before > 0, String(scroll.before));
   eq('the new screen opens at the top', scroll.after, 0);
+  await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- T12 */
+console.log('\nT12  design invariants');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  // Figures: no limb may change length between frames, and none may vanish.
+  const figs = await page.evaluate(() => {
+    const F = AC.figures.F;
+    const SEG = [['upperArmL',2,6],['forearmL',6,8],['upperArmR',2,10],['forearmR',10,12],
+                 ['thighL',4,14],['shinL',14,16],['thighR',4,18],['shinR',18,20],
+                 ['torso',2,4],['head',0,2]];
+    const len = (p,a,b) => Math.hypot(p[a]-p[b], p[a+1]-p[b+1]);
+    const bad = [];
+    for (const id in F) {
+      const f = F[id];
+      SEG.forEach(([n,a,c]) => {
+        const la = len(f.a,a,c), lb = len(f.b,a,c);
+        const r = Math.max(la,lb) / Math.max(0.001, Math.min(la,lb));
+        if (r > 1.25) bad.push(id + '.' + n + ' ' + r.toFixed(2) + 'x');
+        if (Math.min(la,lb) < 8) bad.push(id + '.' + n + ' tiny');
+      });
+    }
+    return bad;
+  });
+  eq('every figure keeps its limb lengths across both frames', figs, []);
+  const thumbFrame = await page.evaluate(() => {
+    AC.store.update(s => { s.onboarded = true; });
+    AC.router.go('library'); AC.screens.render();
+    const fig = document.querySelector('.listrow .fig');
+    return { f0: getComputedStyle(fig.querySelector('.f0')).opacity,
+             f1: getComputedStyle(fig.querySelector('.f1')).opacity };
+  });
+  eq('thumbnails show the end pose, which names the movement', [thumbFrame.f0, thumbFrame.f1], ['0', '1']);
+
+  // Contrast tokens that only bite in one theme combination.
+  const tokens = await page.evaluate(() => {
+    const read = () => getComputedStyle(document.documentElement).getPropertyValue('--primary-ink').trim();
+    document.documentElement.setAttribute('data-theme', 'light');
+    const light = read();
+    document.documentElement.setAttribute('data-theme', 'dark');
+    const dark = read();
+    document.documentElement.removeAttribute('data-theme');
+    return { light, dark };
+  });
+  eq('light theme gets the darker amber ink', tokens.light, '#9C6300');
+  eq('dark theme keeps the bright amber', tokens.dark.toUpperCase(), '#FFB224');
+
+  const knob = await page.evaluate(() => {
+    AC.router.go('more'); AC.screens.render();
+    const on = [...document.querySelectorAll('.switch')].find(s => s.getAttribute('aria-checked') === 'true');
+    return getComputedStyle(on.querySelector('.knob')).backgroundColor;
+  });
+  ok('a checked toggle knob is dark on green, not white', knob !== 'rgb(255, 255, 255)', knob);
+  await ctx.close();
+}
+{
+  // The reachability swipe must work with a real finger, not only a mouse.
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await tap(page, /Start session/i);
+  await page.waitForSelector('.runner-body');
+  const box = await page.locator('.runner-body').boundingBox();
+  const cdp = await ctx.newCDPSession(page);
+  const x = box.x + box.width / 2, y0 = box.y + 40;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: y0 }] });
+  for (let i = 1; i <= 8; i++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y0 + i * 15 }] });
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.waitForTimeout(150);
+  ok('swiping down opens the session menu', (await page.locator('.sheet').count()) === 1);
+  await page.keyboard.press('Escape');
+
+  // A toast must not outlive the screen that raised it.
+  const toast = await page.evaluate(async () => {
+    AC.ui.toast('Round marked missed.', 60000);
+    const before = document.querySelectorAll('.toast').length;
+    AC.router.go('home'); AC.screens.render();
+    await new Promise(r => setTimeout(r, 30));
+    return { before, after: document.querySelectorAll('.toast').length };
+  });
+  eq('the toast was showing', toast.before, 1);
+  eq('and is gone after navigating away', toast.after, 0);
   await ctx.close();
 }
 

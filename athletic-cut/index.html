@@ -77,7 +77,7 @@
     --n-0:#F3F3F0; --n-1:#FFFFFF; --n-2:#FFFFFF; --n-3:#E8E8E4; --n-4:#DCDCD7;
     --n-5:#8A8A93; --n-6:#5F5F69; --n-7:#4B4B55; --n-8:#121215;
     --line:#D6D6D1;
-    --amber-text:#7A4500; --amber-dim:#FFF1D6; --primary-ink:#9C6300; --primary-ink:#9C6300;
+    --amber-text:#7A4500; --amber-dim:#FFF1D6; --primary-ink:#9C6300;
     --cyan-fill:#075F7D; --cyan-text:#055470; --cyan-dim:#DDF1F8; --on-cyan:#FFFFFF;
     --green-fill:#0F6B36; --green-text:#0F6B36; --green-dim:#E3F5EA;
     --red-fill:#B0261B; --red-text:#B0261B; --red-dim:#FDE7E5; --on-red:#FFFFFF;
@@ -92,7 +92,7 @@
   --n-0:#F3F3F0; --n-1:#FFFFFF; --n-2:#FFFFFF; --n-3:#E8E8E4; --n-4:#DCDCD7;
   --n-5:#8A8A93; --n-6:#5F5F69; --n-7:#4B4B55; --n-8:#121215;
   --line:#D6D6D1;
-  --amber-text:#7A4500; --amber-dim:#FFF1D6;
+  --amber-text:#7A4500; --amber-dim:#FFF1D6; --primary-ink:#9C6300;
   --cyan-fill:#075F7D; --cyan-text:#055470; --cyan-dim:#DDF1F8; --on-cyan:#FFFFFF;
   --green-fill:#0F6B36; --green-text:#0F6B36; --green-dim:#E3F5EA;
   --red-fill:#B0261B; --red-text:#B0261B; --red-dim:#FDE7E5; --on-red:#FFFFFF;
@@ -225,6 +225,7 @@ svg{display:block}
 :root[data-hand="left"] .stepper .step-btn:first-child{order:3;border-right:0;border-left:1px solid var(--line)}
 :root[data-hand="left"] .stepper .step-btn:last-child{order:1;border-left:0;border-right:1px solid var(--line)}
 :root[data-hand="left"] .stepper .step-val{order:2}
+:root[data-hand="left"] .runner-head-row{flex-direction:row-reverse}
 .stepper .step-btn:active{background:var(--surface-press)}
 .stepper .step-btn .ico{width:28px;height:28px;stroke-width:2.5}
 .stepper .step-val{
@@ -346,9 +347,7 @@ svg{display:block}
 .switch[aria-checked="true"] .knob{background:var(--n-0)}
 .switch .knob{width:27px;height:27px;border-radius:var(--r-full);background:var(--n-8);
   transition:transform var(--d-fast) var(--ease-std)}
-.switch[aria-checked="true"] .knob{transform:translateX(20px)}
-:root[data-theme="light"] .switch .knob,
-:root:not([data-theme="dark"]) .switch .knob{background:#fff}
+.switch[aria-checked="true"] .knob{transform:translateX(20px);border:1px solid var(--line-ctrl)}
 </style>
 <style>
 /* ============================================================================
@@ -384,6 +383,8 @@ svg{display:block}
   color:var(--text-2)}
 .thumbbtn svg{width:40px;height:40px}
 .thumbbtn .body{stroke-width:5.5}
+.thumbbtn .fig .f0,.listrow .fig .f0{opacity:0}
+.thumbbtn .fig .f1,.listrow .fig .f1{opacity:1}
 .thumbbtn .equip,.thumbbtn .fill{display:none}
 .lastline{display:flex;align-items:baseline;gap:var(--s-2);flex-wrap:wrap;
   min-height:var(--tap-min);width:100%;text-align:left}
@@ -417,6 +418,8 @@ svg{display:block}
   padding:calc(var(--safe-t) + 76px) var(--gutter) calc(max(var(--safe-b),12px));
   gap:var(--s-3);
 }
+.restpanel .actions{background:linear-gradient(to top,var(--rest-dim) 62%,transparent)}
+.rest-meta .r > span:not(.lbl){white-space:nowrap}
 .restpanel > .cap{color:var(--rest-text);font-size:var(--fs-label)}
 .dial{position:relative;width:min(340px,88vw);aspect-ratio:1;display:flex;
   align-items:center;justify-content:center;margin:var(--s-2) auto}
@@ -981,7 +984,7 @@ AC.figures = (function () {
   var HANG_LOW = P(80, 32, 80, 44, 80, 74, 77, 29, 74, 14, 83, 29, 86, 14, 76, 96, 86, 114, 84, 96, 94, 114);
   var PLANK    = P(44, 60, 55, 64, 92, 72, 49.3, 77.9, 46.4, 92.6, 53.1, 78.9, 48.2, 93.1, 116, 70.9, 128, 94, 116, 73.5, 132, 94);
   var PLANK_LOW= P(44, 74, 55, 74, 92, 78, 41, 79.3, 44, 94, 59.8, 88.2, 46, 94, 115.1, 71.4, 128, 94, 115.6, 73.8, 132, 94);
-  var SUPINE   = P(36, 88, 48, 88, 88, 88, 50, 73.1, 40, 62, 54.4, 74.4, 42, 66, 106.7, 73, 122, 94, 109, 76.3, 126, 96);
+  var SUPINE   = P(36, 88, 48, 88, 88, 88, 47.5, 73, 40, 60, 53.2, 73.9, 42, 64, 106.7, 73, 122, 94, 109, 76.3, 126, 96);
   var SEATED   = P(80, 34, 80, 46, 80, 76, 70.1, 57.3, 62.7, 70.3, 89.9, 57.3, 97.3, 70.3, 60.5, 90, 40, 74, 103.9, 73.6, 120, 94);
   var QUAD     = P(46, 58, 58, 62, 96, 64, 54.7, 76.6, 54.3, 91.6, 59.5, 76.9, 58, 91.8, 118.5, 72.2, 108, 96, 119.1, 70.5, 114, 96);
   var PRESS_RK = P(80, 22, 80, 35, 80, 64, 71, 47, 72, 32, 89, 47, 88, 32, 70.7, 86.1, 73, 112, 89.3, 86.1, 87, 112);
@@ -992,22 +995,22 @@ AC.figures = (function () {
   var RUN_A    = P(78, 22, 80, 34, 84, 62, 67.7, 42.5, 58, 54, 89.5, 45.6, 104, 42, 60.1, 64.3, 56, 90, 99.3, 80.5, 111.6, 103.4);
   var RUN_B    = P(78, 22, 80, 34, 84, 62, 90.6, 44.7, 104, 38, 68.8, 44, 59.8, 56, 107.7, 66, 108, 92, 69.7, 81.3, 58.7, 104.8);
   var SIDEPL_DN= P(44, 86, 56, 86, 96, 90, 43.2, 93.8, 48, 108, 63.3, 99.1, 50, 106, 117.2, 78.7, 132, 100, 117.7, 79.7, 134, 100);
-  var SIDEPL_UP= P(42, 66, 56, 68, 96, 80, 50.9, 82.1, 48.8, 97, 65.9, 56.7, 58, 44, 119.1, 73.4, 132, 96, 119.4, 74.5, 134, 96);
+  var SIDEPL_UP= P(44, 56, 56, 62, 96, 66, 51.5, 76.3, 49.9, 91.2, 64.4, 49.6, 58, 36, 118.8, 73.6, 132, 96, 118.1, 75.5, 134, 96);
   var ROT_L    = P(74, 24, 76, 36, 80, 66, 64.1, 45.1, 50, 40, 68.2, 48.8, 54, 44, 67.6, 86.6, 73, 112, 92.8, 86.3, 89, 112);
   var ROT_R    = P(86, 24, 84, 36, 80, 66, 95.9, 45.1, 110, 40, 91.8, 48.8, 106, 44, 67.2, 86.3, 71, 112, 92.4, 86.6, 87, 112);
   var PALLOF_IN= P(80, 24, 80, 36, 80, 66, 66.3, 42.1, 72, 56, 93.7, 42.1, 88, 56, 67.6, 86.6, 73, 112, 92.4, 86.6, 87, 112);
   var PALLOF_OUT=P(80, 24, 80, 36, 80, 66, 67.3, 44, 53.3, 49.3, 68.1, 45.2, 54.7, 51.8, 67.6, 86.6, 73, 112, 92.4, 86.6, 87, 112);
   var BENT_TOP = P(112, 48, 102, 52, 72, 60, 105.3, 66.6, 105.7, 81.6, 106.4, 66.3, 107.9, 81.3, 70.8, 84, 64.4, 109.2, 73.6, 83.9, 70.1, 109.7);
   var BENT_PULL= P(112, 48, 102, 52, 72, 60, 110.5, 64.3, 96, 68, 112.6, 62.6, 98, 66, 70.8, 84, 64.4, 109.2, 73.6, 83.9, 70.1, 109.7);
-  var DIP_TOP  = P(80, 34, 80, 46, 80, 76, 73, 59, 66, 72, 87, 59, 94, 72, 74, 98, 86, 116, 86, 98, 98, 116);
-  var DIP_BTM  = P(80, 48, 80, 60, 80, 90, 65, 57, 66, 72, 95, 57, 94, 72, 74, 110, 86, 120, 86, 110, 98, 120);
+  var DIP_TOP  = P(80, 34, 80, 46, 80, 76, 70.7, 57.7, 66, 72, 84.7, 60.3, 94, 72, 68.3, 97, 86, 116, 77.6, 99.9, 98, 116);
+  var DIP_BTM  = P(80, 48, 80, 60, 80, 90, 65.3, 57, 66, 72, 94.7, 57, 94, 72, 63.3, 107.3, 86, 120, 73, 112.9, 98, 120);
   var BENCH_DN = P(34, 84, 48, 84, 92, 84, 47.5, 69, 44.1, 54.4, 55.5, 71, 48, 58, 111.7, 70.3, 126, 92, 113.7, 73.7, 130, 94);
   var BENCH_UP = P(34, 84, 48, 84, 92, 84, 45.8, 69.2, 46.5, 54.2, 50.3, 69.2, 49.6, 54.2, 111.7, 70.3, 126, 92, 113.7, 73.7, 130, 94);
   var JUMP_LOAD= P(78, 34, 78, 46, 76, 70, 67.6, 56.8, 55.2, 65.3, 85.9, 58.7, 76, 70, 58.3, 86.3, 62, 112, 91.2, 88.5, 80, 112);
   var JUMP_TOP = P(112, 12, 112, 26, 110, 52, 100.9, 36.1, 92, 24, 123.1, 36.1, 132, 24, 89.5, 64.4, 104, 86, 131.5, 62.7, 120, 86);
   var CARRY_A  = P(80, 20, 80, 33, 80, 63, 73.5, 46.5, 69.9, 61.1, 86.5, 46.5, 90.1, 61.1, 73.2, 86, 72, 112, 87.2, 85.9, 89.9, 111.7);
   var CARRY_B  = P(80, 20, 80, 33, 80, 63, 73.5, 46.5, 69.9, 61.1, 86.5, 46.5, 90.1, 61.1, 67.6, 83.6, 58.9, 108.1, 92.7, 83.3, 101.9, 107.7);
-  var TGU_DOWN = P(34, 88, 48, 86, 90, 88, 44.8, 71.4, 44.5, 56.4, 62.5, 90, 48, 94, 107.3, 71.3, 120, 94, 109.7, 74.3, 124, 96);
+  var TGU_DOWN = P(34, 88, 48, 86, 90, 88, 49.5, 71.1, 48, 56.1, 55.9, 98.7, 46, 110, 107.3, 71.3, 120, 94, 109.7, 74.3, 124, 96);
   var TGU_UP   = P(80, 24, 80, 36, 80, 66, 72.5, 23, 72, 8, 88, 48.7, 93.3, 62.7, 67.6, 86.6, 73, 112, 92.4, 86.6, 87, 112);
   var RACK     = P(80, 22, 80, 35, 80, 64, 81.6, 49.9, 76, 36, 88.2, 47.6, 93.7, 61.5, 70.7, 86.1, 73, 112, 89.3, 86.1, 87, 112);
   var RACK_SQ  = P(82, 44, 81, 55, 78, 80, 74.8, 68.7, 78, 54, 88.8, 67.8, 93.9, 81.9, 56.7, 91, 72, 112, 100.2, 89.1, 88, 112);
@@ -1024,7 +1027,7 @@ AC.figures = (function () {
   var F = {
     'deep-squat-hold':      { a: STAND,      b: SQUAT_BTM,  ea: [GND], eb: [GND] },
     'hip-90-90':            { a: SEATED,     b: mod(SEATED, {14:[103.9,73.6],16:[120,94],18:[60.5,90],20:[40,74]}), ea: [GND], eb: [GND] },
-    'glute-bridge':         { a: mod(SUPINE, {4:[88,92]}),  b: mod(SUPINE, {4:[88,74],2:[48,86]}), ea: [GND], eb: [GND] },
+    'glute-bridge':         { a: mod(SUPINE, {4:[88,94],14:[108,80],18:[112,82]}),  b: mod(SUPINE, {4:[88,72],14:[108,72],18:[112,74]}), ea: [GND], eb: [GND] },
     'box-jump':             { a: JUMP_LOAD,  b: JUMP_TOP,   ea: [['box',96,86,44,26], GND], eb: [['box',96,86,44,26], GND] },
     'trap-bar-deadlift':    { a: HINGE_DP,   b: STAND_R,    ea: [['bar',88,104,126,104],['ln',88,96,88,110],['ln',126,96,126,110], GND], eb: [['bar',66,66,104,66],['ln',66,58,66,74],['ln',104,58,104,74], GND] },
     'bulgarian-split-squat':{ a: SPLIT_TOP,  b: SPLIT_BTM,  ea: [['db',67,64],['db',93,64],['box',108,96,34,18], GND], eb: [['db',64,74],['db',90,74],['box',108,96,34,18], GND] },
@@ -1032,13 +1035,13 @@ AC.figures = (function () {
     'kettlebell-swing':     { a: HINGE,      b: SWING_TOP,  ea: [['kb',103,82], GND], eb: [['kb',110,50], GND] },
     'dead-hang':            { a: mod(STAND,{6:[66.8,25.9],8:[76,14],10:[93.2,25.9],12:[84,14]}), b: HANG_LOW, ea: [['bar',52,12,108,12], GND], eb: [['bar',52,12,108,12]] },
     'band-pull-apart':      { a: mod(STAND, {6:[68,46],8:[72,60],10:[92,46],12:[88,60]}), b: mod(STAND, {6:[65,45],8:[50,50],10:[95,45],12:[110,50]}), ea: [['band',72,60,88,60], GND], eb: [['band',50,50,110,50], GND] },
-    'thoracic-rotation':    { a: QUAD,       b: mod(QUAD, {6:[54,52],8:[58,36]}), ea: [GND], eb: [GND] },
+    'thoracic-rotation':    { a: QUAD,       b: mod(QUAD, {0:[44,50],6:[56,44],8:[60,26]}), ea: [GND], eb: [GND] },
     'push-up':              { a: PLANK,      b: PLANK_LOW,  ea: [GND], eb: [GND] },
     'weighted-pull-up':     { a: HANG_LOW,   b: HANG_TOP,   ea: [['bar',52,12,108,12],['circ',82,108,7]], eb: [['bar',52,12,108,12],['circ',82,98,7]] },
     'pull-up':              { a: HANG_LOW,   b: HANG_TOP,   ea: [['bar',52,12,108,12]], eb: [['bar',52,12,108,12]] },
     'overhead-press':       { a: PRESS_RK,   b: PRESS_LK,   ea: [['bar',56,32,104,32], GND], eb: [['bar',56,10,104,10], GND] },
     'chest-supported-row':  { a: BENT_TOP,   b: BENT_PULL,  ea: [['db',105,84],['db',107,82],['ln',60,58,116,88]], eb: [['db',96,68],['db',98,66],['ln',60,58,116,88]] },
-    'dip':                  { a: DIP_TOP,    b: DIP_BTM,    ea: [['ln',52,72,74,72],['ln',86,72,108,72]], eb: [['ln',52,72,74,72],['ln',86,72,108,72]] },
+    'dip':                  { a: DIP_TOP,    b: DIP_BTM,    ea: [['ln',36,72,74,72],['ln',86,72,124,72],['ln',40,72,40,112],['ln',120,72,120,112], GND], eb: [['ln',36,72,74,72],['ln',86,72,124,72],['ln',40,72,40,112],['ln',120,72,120,112], GND] },
     'face-pull':            { a: mod(STAND, {6:[68,46],8:[54,44],10:[92,46],12:[106,44]}), b: mod(STAND, {6:[62,36],8:[74,32],10:[98,36],12:[86,32]}), ea: [['ln',20,44,54,44],['ln',20,44,106,44], GND], eb: [['ln',20,38,74,32],['ln',20,38,86,32], GND] },
     'farmers-carry':        { a: CARRY_A,    b: CARRY_B,    ea: [['db',66,74],['db',94,74], GND], eb: [['db',66,74],['db',94,74], GND] },
     'jog':                  { a: RUN_A,      b: RUN_B,      ea: [GND], eb: [GND] },
@@ -1076,8 +1079,39 @@ AC.figures = (function () {
     'generic-core':         { a: SUPINE,     b: mod(SUPINE, {14:[106,60],16:[120,44],18:[110,62],20:[124,46]}), ea: [GND], eb: [GND] }
   };
 
+  /* Enforce one skeleton for every pose: a fixed torso and head offset, and
+     limbs of constant length placed by two-bone IK with the hand or foot kept
+     where the drawing put it (on the bar, on the box, on the floor). A limb
+     that changes length between frames reads as a drawing error, not motion. */
+  var UA = 15, FA = 15, TH = 24, SHIN = 26, TORSO = 30, HEAD = 12;
+  function ikJoint(rx, ry, tx, ty, l1, l2, bx, by) {
+    var dx = tx - rx, dy = ty - ry, d = Math.sqrt(dx * dx + dy * dy), reach = l1 + l2;
+    if (d > reach * 0.995) { var k = reach * 0.995 / d; tx = rx + dx * k; ty = ry + dy * k; dx = tx - rx; dy = ty - ry; d = reach * 0.995; }
+    if (d < 1e-6) d = 1e-6;
+    var a = (d * d + l1 * l1 - l2 * l2) / (2 * d);
+    var hgt = Math.sqrt(Math.max(0, l1 * l1 - a * a));
+    var ux = dx / d, uy = dy / d, px = -uy, py = ux;
+    var sgn = ((bx - rx) * px + (by - ry) * py) >= 0 ? 1 : -1;
+    return [rx + ux * a + px * hgt * sgn, ry + uy * a + py * hgt * sgn, tx, ty];
+  }
+  function normalize(p) {
+    p = p.slice();
+    var hx = p[4], hy = p[5];
+    var dx = p[2] - hx, dy = p[3] - hy, d = Math.sqrt(dx * dx + dy * dy) || 1;
+    p[2] = hx + dx / d * TORSO; p[3] = hy + dy / d * TORSO;
+    var ex = p[0] - p[2], ey = p[1] - p[3], e = Math.sqrt(ex * ex + ey * ey) || 1;
+    p[0] = p[2] + ex / e * HEAD; p[1] = p[3] + ey / e * HEAD;
+    [[6, 8, 2, 3, UA, FA], [10, 12, 2, 3, UA, FA],
+     [14, 16, 4, 5, TH, SHIN], [18, 20, 4, 5, TH, SHIN]].forEach(function (L) {
+      var r = ikJoint(p[L[2]], p[L[3]], p[L[1]], p[L[1] + 1], L[4], L[5], p[L[0]], p[L[0] + 1]);
+      p[L[0]] = r[0]; p[L[0] + 1] = r[1]; p[L[1]] = r[2]; p[L[1] + 1] = r[3];
+    });
+    return p;
+  }
+  Object.keys(F).forEach(function (k) { F[k].a = normalize(F[k].a); F[k].b = normalize(F[k].b); });
+
   function get(id) { return F[id] || F['generic-mobility']; }
-  return { F: F, get: get, J: J, mod: mod };
+  return { F: F, get: get, J: J, mod: mod, normalize: normalize };
 })();
 
 /* --------------------------------------------------------------------------
@@ -2397,7 +2431,7 @@ AC.stats = (function () {
    -------------------------------------------------------------------------- */
 AC.engine = (function () {
   var U = AC.util;
-  var lastLogged = { slotId: null, at: 0 };
+
   var audioHandle = null;
   var listeners = [];
 
@@ -2589,6 +2623,8 @@ AC.engine = (function () {
     var a = AS();
     if (!a) return;
     clearAudio();
+    clearEmomCues();
+    if (AC.ui) AC.ui.hideToast();
     AC.store.update(function (s) {
       s.sessions.push(toLog(a, 'abandoned'));
       s.activeSession = null;
@@ -2692,6 +2728,22 @@ AC.engine = (function () {
   function stopTimer() {
     clearAudio();
     AC.store.update(function (s) { if (s.activeSession) s.activeSession.timer = null; });
+  }
+  /* Screen readers announce "2:30" as a time of day, so spell the duration out. */
+  function spokenTime(sec) {
+    var m = Math.floor(sec / 60), s2 = Math.round(sec % 60);
+    var parts = [];
+    if (m) parts.push(m + (m === 1 ? ' minute' : ' minutes'));
+    if (s2) parts.push(s2 + (s2 === 1 ? ' second' : ' seconds'));
+    return parts.join(' ') || '0 seconds';
+  }
+  function nextSetSpoken(slot) {
+    var b = AS() && AS().block;
+    if (!b || !slot || b.setIndex === undefined) return '';
+    var d = b.draft || {};
+    return 'Next: set ' + (b.setIndex + 1) +
+      (d.load ? ', ' + d.load + ' ' + (d.unit === 'kg' ? 'kilos' : 'pounds') : '') +
+      (d.reps ? ' times ' + d.reps : '') + '.';
   }
   function timerRemaining() {
     var a = AS();
@@ -2837,13 +2889,10 @@ AC.engine = (function () {
     opts = opts || {};
     var a = AS(), blk = currentBlock();
     if (!a || !blk) return;
-    /* Guard the real double-tap: the same slot logged twice inside 400 ms.
-       Moving on to the next exercise of a superset is not a double tap. */
-    var b0 = a.block;
-    var curSlot = b0.mode === 'rounds' ? blk.items[b0.itemIndex] : blk.items[b0.slotIndex || 0];
-    var t = AC.ticker.now();
-    if (curSlot && lastLogged.slotId === curSlot.id && t - lastLogged.at < 400) return;
-    lastLogged = { slotId: curSlot ? curSlot.id : null, at: t };
+    /* Double-tap protection lives on the button itself (it disables on the
+       first tap and is replaced by the re-render). A wall-clock window is the
+       wrong tool: it cannot tell a stray second tap from a fast superset
+       hand-off, and it stops working the moment the clock is stepped. */
     var b = a.block;
     if (b.mode === 'straight-sets' || b.mode === 'carry') {
       var slot = blk.items[b.slotIndex || 0];
@@ -2859,7 +2908,7 @@ AC.engine = (function () {
       if (!opts.warmup && blk.restSeconds > 0) {
         AC.store.update(function (s) { s.activeSession.block.phase = 'rest'; });
         startTimer('rest', blk.restSeconds, 'Rest');
-        U.announce('Rest started, ' + U.fmtMs(blk.restSeconds) + '.');
+        U.announce('Rest started, ' + spokenTime(blk.restSeconds) + '. ' + nextSetSpoken(slot));
       }
       /* Carry the load forward, reset reps/rpe to the target for the next set. */
       AC.store.update(function (s) {
@@ -3764,15 +3813,34 @@ AC.screens = (function () {
 
   /* §4.3.7 — the header must never be the only route to an action. */
   function attachReachSwipe(el) {
-    var x0 = 0, y0 = 0, live = false;
-    el.addEventListener('pointerdown', function (ev) {
-      if (ev.target.closest('.stepper,.chip,button,input,textarea')) { live = false; return; }
-      x0 = ev.clientX; y0 = ev.clientY; live = true;
-    });
-    el.addEventListener('pointerup', function (ev) {
+    var x0 = 0, y0 = 0, s0 = 0, lx = 0, ly = 0, live = false;
+    function start(x, y, target) {
+      if (target && target.closest && target.closest('.stepper,.chip,button,input,textarea')) { live = false; return; }
+      x0 = lx = x; y0 = ly = y; s0 = window.scrollY; live = true;
+    }
+    function end(x, y) {
       if (!live) return;
       live = false;
-      if (ev.clientY - y0 > 64 && Math.abs(ev.clientX - x0) < 40) moreSheet();
+      if (Math.abs(window.scrollY - s0) > 8) return;      /* that was a scroll, not a swipe */
+      if (y - y0 > 64 && Math.abs(x - x0) < 40) moreSheet();
+    }
+    /* Touch first: once the browser claims the vertical pan it fires
+       pointercancel and pointerup never arrives. */
+    el.addEventListener('touchstart', function (e) {
+      var t = e.touches[0]; if (t) start(t.clientX, t.clientY, e.target);
+    }, { passive: true });
+    el.addEventListener('touchmove', function (e) {
+      var t = e.touches[0]; if (t) { lx = t.clientX; ly = t.clientY; }
+    }, { passive: true });
+    el.addEventListener('touchend', function (e) {
+      var t = e.changedTouches && e.changedTouches[0];
+      end(t ? t.clientX : lx, t ? t.clientY : ly);
+    }, { passive: true });
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType !== 'touch') start(e.clientX, e.clientY, e.target);
+    });
+    el.addEventListener('pointerup', function (e) {
+      if (e.pointerType !== 'touch') end(e.clientX, e.clientY);
     });
   }
   function blockHeader(blk, b) {
@@ -3827,8 +3895,9 @@ AC.screens = (function () {
     }
     var l = s.last;
     var bits = [];
-    if (l.load !== null && l.load !== undefined) bits.push(fmtLoad(l.load, l.loadUnit));
-    if (l.reps !== null) bits.push('× ' + l.reps);
+    var hasLoad = l.load !== null && l.load !== undefined;
+    if (hasLoad) bits.push(fmtLoad(l.load, l.loadUnit));
+    if (l.reps !== null) bits.push(hasLoad ? '× ' + l.reps : l.reps + ' reps');
     if (l.distanceM) bits.push('× ' + l.distanceM + ' m');
     if (l.seconds) bits.push(l.seconds + ' s');
     if (l.rpe) bits.push('@ ' + l.rpe);
@@ -3990,8 +4059,9 @@ AC.screens = (function () {
     mine.slice(-4).forEach(function (e, i, arr) {
       var isLast = a.entries[a.entries.length - 1] === e;
       var bits = [];
-      if (e.load !== null && e.load !== undefined) bits.push(fmtLoad(e.load, e.loadUnit));
-      if (e.reps !== null) bits.push('× ' + e.reps);
+      var hadLoad = e.load !== null && e.load !== undefined;
+      if (hadLoad) bits.push(fmtLoad(e.load, e.loadUnit));
+      if (e.reps !== null) bits.push(hadLoad ? '× ' + e.reps : e.reps + ' reps');
       if (e.distanceM) bits.push('× ' + e.distanceM + ' m');
       if (e.seconds) bits.push(e.seconds + ' s');
       if (e.rpe) bits.push('@ ' + e.rpe);
@@ -4051,8 +4121,13 @@ AC.screens = (function () {
     wrap.appendChild(h('div', { class: 'spacer' }));
     var next = S().activeSession.blocks[S().activeSession.blockIndex + 1];
     wrap.appendChild(h('div', { class: 'actions' },
-      ui.btn('Continue' + (next ? ' to ' + next.label.toLowerCase() : '') + '   ' + b.checked.length + '/' + blk.items.length,
-        function () { AC.engine.nextBlock(); }, 'primary')));
+      (function () {
+        var cb = ui.btn('Continue' + (next ? ' to ' + next.label.toLowerCase() : ''),
+          function () { AC.engine.nextBlock(); }, 'primary');
+        cb.appendChild(h('span', { style: 'margin-left:auto;opacity:.75',
+          text: b.checked.length + '/' + blk.items.length }));
+        return cb;
+      })()));
     return wrap;
   }
 
@@ -4128,7 +4203,8 @@ AC.screens = (function () {
     wrap.appendChild(dl);
     var pips = h('div', { class: 'pips', 'aria-label': 'Rounds completed' });
     for (var i = 0; i < b.minutes; i++) {
-      pips.appendChild(h('i', { class: i < b.minute ? (b.missed[i] ? 'miss' : 'on') : '' }));
+      pips.appendChild(h('i', { class: i < b.minute ? (b.missed[i] ? 'miss' : 'on')
+        : (i === b.minute && b.missed[i] ? 'miss' : '') }));
     }
     var doneCount = 0;
     for (var j = 0; j < b.minute; j++) if (!b.missed[j]) doneCount++;
@@ -4137,8 +4213,13 @@ AC.screens = (function () {
     wrap.appendChild(h('div', { class: 'spacer' }));
     wrap.appendChild(h('div', { class: 'actions' },
       h('div', { class: 'btn-row' },
-        ui.btn('Missed', function () { AC.engine.markMissed(); }, 'ghost',
-          { ariaLabel: 'Mark this round as missed' }),
+        (function () {
+          var marked = !!b.missed[b.minute];
+          var mb = ui.btn(marked ? 'Missed ✓' : 'Missed', function () { AC.engine.markMissed(); }, 'ghost',
+            { ariaLabel: 'Mark this round as missed' });
+          mb.setAttribute('aria-pressed', marked ? 'true' : 'false');
+          return mb;
+        })(),
         ui.btn('End early', function () { AC.engine.finishEmom(); }, 'outline'))));
     return wrap;
   }
@@ -4259,6 +4340,9 @@ AC.screens = (function () {
     var a = S().activeSession, blk = AC.engine.currentBlock(), b = a.block;
     var total = (a.timer.endAt - a.timer.startedAt) / 1000;
     var panel = h('div', { class: 'restpanel' });
+    attachReachSwipe(panel);
+    var rhead = document.querySelector('.runner-head');
+    if (rhead && rhead.offsetHeight) panel.style.paddingTop = (rhead.offsetHeight + 8) + 'px';
     var heading = h('div', { class: 'cap', text: 'Rest', tabindex: '-1' });
     panel.appendChild(heading);
     setTimeout(function () { try { heading.focus(); } catch (e) {} }, 30);
@@ -4273,8 +4357,9 @@ AC.screens = (function () {
     var last = a.entries[a.entries.length - 1];
     if (last) {
       var bits = [];
-      if (last.load !== null) bits.push(fmtLoad(last.load, last.loadUnit));
-      if (last.reps !== null) bits.push('× ' + last.reps);
+      var lastHadLoad = last.load !== null && last.load !== undefined;
+      if (lastHadLoad) bits.push(fmtLoad(last.load, last.loadUnit));
+      if (last.reps !== null) bits.push(lastHadLoad ? '× ' + last.reps : last.reps + ' reps');
       if (last.distanceM) bits.push('× ' + last.distanceM + ' m');
       if (last.rpe) bits.push('@ ' + last.rpe);
       meta.appendChild(h('div', { class: 'r' },
@@ -4290,7 +4375,7 @@ AC.screens = (function () {
     panel.appendChild(h('div', { class: 'actions' },
       h('div', { class: 'btn-row' },
         ui.btn('Skip rest', function () { AC.engine.endRest(); restCollapsed = false; }, 'ghost'),
-        ui.btn('+30 sec', function () { AC.engine.extendTimer(S().settings.restExtendSeconds || 30); }, 'rest',
+        ui.btn('+30 s', function () { AC.engine.extendTimer(S().settings.restExtendSeconds || 30); }, 'rest',
           { ariaLabel: 'Add 30 seconds of rest' })),
       h('button', { class: 'linkbtn', type: 'button', style: 'align-self:center',
         text: '⌄ adjust next set', onclick: function () { restCollapsed = true; render(); } })));
@@ -4397,18 +4482,11 @@ AC.screens = (function () {
   function leaveSheet() {
     var s = ui.sheet({
       title: 'Leave this session?',
-      body: [h('p', { style: 'color:var(--text-2)', text: 'Pausing keeps everything exactly where it is. You can pick it up from Home.' })],
+      body: [h('p', { style: 'color:var(--text-2)',
+        text: 'Pausing keeps everything where it is — pick it up from Home. To abandon the session, use the ⋯ menu.' })],
       actions: [
         ui.btn('Pause and leave', function () { s.close(); AC.wake.release(); AC.router.go('home'); }, 'primary'),
-        ui.btn('Cancel', function () { s.close(); }, 'ghost'),
-        ui.btn('Abandon session', function () {
-          s.close();
-          ui.confirm({ title: 'Abandon this session?',
-            message: 'Logged sets are kept in history as an abandoned session. The schedule does not advance.',
-            confirmLabel: 'Abandon' }).then(function (ok) {
-              if (ok) { AC.engine.abandon(); AC.router.go('home'); }
-            });
-        }, 'danger', { small: true })
+        ui.btn('Cancel', function () { s.close(); }, 'ghost')
       ]
     });
   }
@@ -4772,7 +4850,7 @@ AC.screens = (function () {
         var ex = st.exercises[s.id];
         return h('span', { class: 'chip chip--sm', style: 'color:var(--text)' },
           h('i', { style: 'width:10px;height:10px;border-radius:99px;display:inline-block;margin-right:6px;background:' +
-            (['var(--primary)', 'var(--rest)', 'var(--success)', 'var(--text-2)'][i % 4]) }),
+            (['var(--primary-ink)', 'var(--rest)', 'var(--success)', 'var(--text-2)'][i % 4]) }),
           h('span', { text: ex ? ex.name : s.id }));
       })) : null,
       AC.charts.line({ height: 200, label: 'Estimated one-rep max per main lift',
@@ -5170,7 +5248,7 @@ AC.screens = (function () {
     }
     U.clear(app());
     app().appendChild(node);
-    if (route !== prevRoute || cur.param !== prevParam) window.scrollTo(0, 0);
+    if (route !== prevRoute || cur.param !== prevParam) { window.scrollTo(0, 0); ui.hideToast(); }
     prevRoute = route; prevParam = cur.param;
     tickUI();
   }
