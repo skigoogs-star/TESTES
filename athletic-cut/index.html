@@ -192,6 +192,12 @@ svg{display:block}
 .btn--sm{min-height:var(--tap-ctrl);font-size:var(--fs-label)}
 .btn:disabled{opacity:.45}
 .btn-row{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-4)}
+.backbtn{min-height:var(--tap-min);padding:0 var(--s-2);align-self:flex-start;
+  color:var(--text-2);font-size:var(--fs-label);font-weight:600;
+  display:inline-flex;align-items:center;gap:6px}
+.backbtn:active{background:var(--surface-press);border-radius:var(--r-2)}
+.donecard{background:var(--success-dim);border-radius:var(--r-3);padding:var(--s-4);
+  display:flex;flex-direction:column;gap:var(--s-2)}
 .linkbtn{min-height:var(--tap-min);padding:0 var(--s-1);color:var(--primary-text);
   font-size:var(--fs-body);font-weight:600;display:inline-flex;align-items:center;gap:4px}
 .iconbtn{
@@ -374,8 +380,9 @@ svg{display:block}
 .runner-body > .stack{flex:1;min-height:0}
 .runner.is-resting .runner-body{opacity:.4;pointer-events:none}
 .ex-head{display:flex;align-items:flex-start;gap:var(--s-2)}
-.ex-name{font-size:var(--fs-h1);font-weight:800;line-height:var(--lh-tight);flex:1;
+.ex-name{font-size:var(--fs-h1);font-weight:800;line-height:var(--lh-tight);
   letter-spacing:-.01em}
+.ex-head .ex-name{flex:1}
 .ex-target{font-size:var(--fs-label);color:var(--text-2);margin-top:2px}
 .ex-note{font-size:var(--fs-label);color:var(--text-3)}
 .thumbbtn{width:var(--tap-min);height:var(--tap-min);border-radius:var(--r-2);
@@ -2840,7 +2847,10 @@ AC.engine = (function () {
     stopTimer();
     AC.store.update(function (s) {
       var b = s.activeSession.block;
-      if (b && (b.mode === 'straight-sets' || b.mode === 'carry' || b.mode === 'rounds')) b.phase = 'input';
+      /* A finished block stays finished when its rest ends — the user decides
+         whether to add another set or move on. */
+      if (b && b.phase !== 'done' &&
+          (b.mode === 'straight-sets' || b.mode === 'carry' || b.mode === 'rounds')) b.phase = 'input';
     });
     emit();
     setTimeout(function () {
@@ -2920,7 +2930,16 @@ AC.engine = (function () {
       });
       AC.audio.beep('tick');
       var done = !opts.warmup && AS().block.setIndex >= slot.sets;
-      if (done) { finishBlock(); return; }
+      if (done) {
+        /* Stay in the block and hand the decision to the user: another set, or move on. */
+        AC.store.update(function (s) { s.activeSession.block.phase = 'done'; });
+        if (blk.restSeconds > 0) {
+          startTimer('rest', blk.restSeconds, 'Rest');
+          U.announce(blk.label + ' done, ' + slot.sets + ' sets. Rest ' + spokenTime(blk.restSeconds) + '.');
+        }
+        emit();
+        return;
+      }
       if (!opts.warmup && blk.restSeconds > 0) {
         AC.store.update(function (s) { s.activeSession.block.phase = 'rest'; });
         startTimer('rest', blk.restSeconds, 'Rest');
@@ -2947,7 +2966,15 @@ AC.engine = (function () {
       });
       AC.audio.beep('tick');
       var nb = AS().block;
-      if (nb.round >= (blk.rounds || 1)) { finishBlock(); return; }
+      if (nb.round >= (blk.rounds || 1)) {
+        AC.store.update(function (s) { s.activeSession.block.phase = 'done'; });
+        if (blk.restSeconds > 0) {
+          startTimer('rest', blk.restSeconds, 'Rest');
+          U.announce(blk.label + ' done, ' + blk.rounds + ' rounds. Rest ' + spokenTime(blk.restSeconds) + '.');
+        }
+        emit();
+        return;
+      }
       if (nb.itemIndex === 0 && blk.restSeconds > 0) {
         AC.store.update(function (s) { s.activeSession.block.phase = 'rest'; });
         startTimer('rest', blk.restSeconds, 'Rest');
@@ -2965,11 +2992,25 @@ AC.engine = (function () {
     var b = initBlock(blk, aa.sessionId);
     var mine = aa.entries.filter(function (e) { return e.blockId === blk.id && !e.isWarmup; });
     if (b.mode === 'straight-sets' || b.mode === 'carry') {
-      b.setIndex = Math.min(mine.length, (blk.items[0] || {}).sets || 1);
+      var sets = (blk.items[0] || {}).sets || 1;
+      b.setIndex = Math.min(mine.length, sets);
+      if (mine.length >= sets) b.phase = 'done';
     } else if (b.mode === 'rounds') {
       var n = blk.items.length || 1;
       b.round = Math.min(Math.floor(mine.length / n), (blk.rounds || 1));
       b.itemIndex = mine.length % n;
+      if (b.round >= (blk.rounds || 1)) b.phase = 'done';
+    } else if (b.mode === 'checklist') {
+      /* Do not lose the ticks when stepping back into a prep or mobility block. */
+      var prior = (aa.blockResults || []).filter(function (r) { return r.blockId === blk.id; })[0];
+      if (prior && prior.checked) b.checked = prior.checked.slice();
+    } else if (b.mode === 'emom' && mine.length) {
+      b.status = 'finished';
+      b.roundsCompleted = mine.length;
+      if (mine[0].load) b.load = mine[0].load;
+    } else if (b.mode === 'interval' && mine.length) {
+      b.status = 'finished';
+      b.effortIndex = mine.length;
     }
     return b;
   }
@@ -3124,13 +3165,50 @@ AC.engine = (function () {
     emomHandles.forEach(function (h) { AC.audio.cancel(h); });
     emomHandles = [];
   }
-  function addRound() {
-    var blk = currentBlock();
-    if (!blk || !blk.roundsMax || blk.rounds >= blk.roundsMax) return;
+  /* Extend this block for this session only — the seeded program is untouched. */
+  function addSet() {
+    var a = AS(), blk = currentBlock();
+    if (!a || !blk) return;
+    var b = a.block;
     AC.store.update(function (s) {
-      s.activeSession.blocks[s.activeSession.blockIndex].rounds++;
+      var aa = s.activeSession;
+      var bb = aa.blocks[aa.blockIndex];
+      if (b.mode === 'rounds') bb.rounds = (bb.rounds || 1) + 1;
+      else bb.items[aa.block.slotIndex || 0].sets++;
+      aa.block.phase = 'input';
     });
+    if (b.mode !== 'rounds') {
+      /* Carry the load forward and reset the reps to the prescribed target. */
+      var slot = AS().blocks[AS().blockIndex].items[b.slotIndex || 0];
+      AC.store.update(function (s) {
+        var d = s.activeSession.block.draft;
+        d.reps = targetReps(slot);
+        d.rpe = null;
+        d.suggested = false;
+      });
+    }
     emit();
+  }
+  function addRound() { addSet(); }
+  function addedSets() {
+    var a = AS(), blk = currentBlock();
+    if (!a || !blk) return 0;
+    if (a.block.mode === 'rounds') {
+      var seed = seedBlock(blk.id);
+      return seed ? (blk.rounds || 0) - (seed.rounds || 0) : 0;
+    }
+    var seedB = seedBlock(blk.id);
+    if (!seedB) return 0;
+    var i = a.block.slotIndex || 0;
+    return (blk.items[i].sets || 0) - ((seedB.items[i] || {}).sets || 0);
+  }
+  function seedBlock(blockId) {
+    var days = S().program.days, found = null;
+    days.forEach(function (d) {
+      var all = (d.blocks || []).concat((d.options || []).reduce(function (acc, o) { return acc.concat(o.blocks); }, []));
+      all.forEach(function (b) { if (b.id === blockId) found = b; });
+    });
+    return found;
   }
   function markMissed() {
     AC.store.update(function (s) { s.activeSession.block.missed[s.activeSession.block.minute] = true; });
@@ -3282,27 +3360,41 @@ AC.engine = (function () {
     if (!a || !blk) return;
     var res = blockResult(blk, a.block);
     if (skipped) res.skipped = true;
-    var restAfter = 0;
-    if (!skipped && (a.block.mode === 'straight-sets' || a.block.mode === 'rounds') && blk.restSeconds > 0) {
-      var next = a.blocks[a.blockIndex + 1];
-      if (next && next.mode !== 'checklist') restAfter = blk.restSeconds;
-    }
-    stopTimer();
+    /* A rest already counting down carries into the next block rather than
+       restarting; anything else is cleared. */
+    var keepRest = !skipped && a.timer && a.timer.kind === 'rest' && !a.timer.fired &&
+      a.timer.endAt > AC.ticker.now();
+    var carried = keepRest ? JSON.parse(JSON.stringify(a.timer)) : null;
+    if (!keepRest) stopTimer();
     AC.store.update(function (s) {
       var aa = s.activeSession;
       aa.blockResults.push(res);
       aa.blockIndex++;
-      var nb = aa.blocks[aa.blockIndex];
-      aa.block = nb ? initBlock(nb, aa.sessionId) : null;
-      aa.timer = null;
+      aa.block = aa.blocks[aa.blockIndex] ? rebuildBlockState(aa, aa.blockIndex) : null;
+      aa.timer = carried;
     });
-    if (restAfter) {
-      AC.store.update(function (s) { if (s.activeSession.block) s.activeSession.block.phase = 'rest'; });
-      startTimer('rest', restAfter, 'Rest');
-    }
     emit();
   }
   function nextBlock() { finishBlock(false); }
+  /* Back undoes the most recent forward step: a set you logged by mistake, or a
+     block you moved past. Moving past a block never deletes anything. */
+  var SET_MODES = { 'straight-sets': 1, 'carry': 1, 'rounds': 1 };
+  function undoableHere() {
+    var a = AS(), blk = currentBlock();
+    if (!a || !blk || !a.block || !SET_MODES[a.block.mode]) return 0;
+    return a.entries.filter(function (e) { return e.blockId === blk.id; }).length;
+  }
+  function canGoBack() {
+    var a = AS();
+    if (!a) return false;
+    return undoableHere() > 0 || a.blockIndex > 0;
+  }
+  function back() {
+    var a = AS();
+    if (!a) return;
+    if (undoableHere() > 0) { undoLastSet(); return; }
+    if (a.blockIndex > 0) prevBlock();
+  }
   function skipBlock() { finishBlock(true); }
   function prevBlock() {
     var a = AS();
@@ -3311,8 +3403,9 @@ AC.engine = (function () {
     AC.store.update(function (s) {
       var aa = s.activeSession;
       aa.blockIndex--;
+      /* Rebuild before dropping the result — the checklist's ticks live in it. */
+      aa.block = rebuildBlockState(aa, aa.blockIndex);
       aa.blockResults = aa.blockResults.filter(function (r) { return r.blockId !== aa.blocks[aa.blockIndex].id; });
-      aa.block = rebuildBlockState(aa, aa.blockIndex);   /* keep the sets already logged */
       aa.timer = null;
     });
     emit();
@@ -3381,6 +3474,7 @@ AC.engine = (function () {
     markSlower: markSlower, shouldSuggestStop: shouldSuggestStop, addEffort: addEffort,
     stopSprints: stopSprints, startHold: startHold,
     nextBlock: nextBlock, skipBlock: skipBlock, prevBlock: prevBlock, skipExercise: skipExercise,
+    back: back, canGoBack: canGoBack, addSet: addSet, addedSets: addedSets,
     finishBlock: finishBlock, isAtWrapup: isAtWrapup, setWrapup: setWrapup,
     startTimer: startTimer, extendTimer: extendTimer, stopTimer: stopTimer,
     rescheduleAudio: function () { var a = AS(); if (a && a.timer && !a.timer.fired) scheduleTimerAudio(a.timer); },
@@ -3814,6 +3908,10 @@ AC.screens = (function () {
     else if (blk.mode === 'interval') body.appendChild(intervalBlock(blk, b));
     else if (blk.mode === 'freeform') body.appendChild(freeformBlock(blk, b));
     else body.appendChild(setsBlock(blk, b));
+    if (!atWrap && AC.engine.canGoBack()) {
+      var band = body.querySelector('.actions');
+      if (band) band.insertBefore(backRow(), band.firstChild);
+    }
     el.appendChild(body);
 
     /* rest takeover */
@@ -3865,9 +3963,13 @@ AC.screens = (function () {
     if (blk.mode === 'straight-sets' || blk.mode === 'carry') {
       var slot = blk.items[b.slotIndex || 0];
       var word = blk.mode === 'carry' ? 'TRIP' : 'SET';
+      if (b.phase === 'done') return lbl + ' · ' + slot.sets + ' ' + word + 'S DONE';
       return lbl + ' · ' + word + ' ' + Math.min(b.setIndex + 1, slot.sets) + ' OF ' + slot.sets;
     }
-    if (blk.mode === 'rounds') return lbl + ' · ROUND ' + Math.min(b.round + 1, blk.rounds) + ' OF ' + blk.rounds;
+    if (blk.mode === 'rounds') {
+      if (b.phase === 'done') return lbl + ' · ' + blk.rounds + ' ROUNDS DONE';
+      return lbl + ' · ROUND ' + Math.min(b.round + 1, blk.rounds) + ' OF ' + blk.rounds;
+    }
     if (blk.mode === 'emom') return lbl + ' · EMOM ' + blk.emom.minutes + ' MIN';
     if (blk.mode === 'interval') {
       return lbl + ' · EFFORT ' + Math.min(b.effortIndex + 1, b.effortsTarget) + ' OF ' + b.effortsTarget;
@@ -3888,6 +3990,13 @@ AC.screens = (function () {
     return strip;
   }
 
+  function backRow() {
+    var b = h('button', { class: 'backbtn', type: 'button',
+      'aria-label': 'Go back to the previous set or exercise' },
+      h('span', { text: '◂' }), h('span', { text: 'Back' }));
+    b.addEventListener('click', function () { restCollapsed = false; AC.engine.back(); });
+    return b;
+  }
   function exHead(slot, extra) {
     var ex = S().exercises[slot.exerciseId] || { name: slot.exerciseId, cues: [] };
     return h('div', { class: 'ex-head' },
@@ -3949,7 +4058,41 @@ AC.screens = (function () {
     return st;
   }
 
+  function doneBlock(blk, b) {
+    var a = S().activeSession;
+    var isRounds = blk.mode === 'rounds';
+    var wrap = h('div', { class: 'stack' });
+    var mine = a.entries.filter(function (e) { return e.blockId === blk.id && !e.isWarmup; });
+    var vol = mine.reduce(function (t, e) { return t + AC.stats.setVolume(e, a.bodyweightAtTime); }, 0);
+    var unit = isRounds ? 'round' : blk.mode === 'carry' ? 'trip' : 'set';
+    var count = isRounds ? blk.rounds : (blk.items[b.slotIndex || 0] || {}).sets || mine.length;
+    var extra = AC.engine.addedSets();
+
+    wrap.appendChild(h('div', { class: 'ex-name', text: blk.label + ' done' }));
+    wrap.appendChild(h('div', { class: 'donecard' },
+      h('div', { class: 'cap', style: 'color:var(--success-text)', text: 'Logged' }),
+      h('div', { class: 'statline' },
+        h('span', { class: 'v num', text: String(count) }),
+        h('span', { class: 'd', text: unit + (count === 1 ? '' : 's') +
+          (extra > 0 ? ' · ' + extra + ' added' : '') + (vol ? ' · ' + U.num(Math.round(vol)) + ' lb' : '') })),
+      h('p', { style: 'font-size:var(--fs-label);color:var(--text-2)',
+        text: 'Add another ' + unit + ' if you have one in you, or move on.' })));
+    wrap.appendChild(setList(blk, true));
+    wrap.appendChild(h('div', { class: 'spacer' }));
+
+    var next = a.blocks[a.blockIndex + 1];
+    var band = h('div', { class: 'actions' });
+    var resting = a.timer && a.timer.kind === 'rest';
+    if (resting && restCollapsed) band.appendChild(restBar());
+    band.appendChild(ui.btn('+ Add a ' + unit, function () { AC.engine.addSet(); }, 'ghost', { small: true }));
+    band.appendChild(ui.btn(next ? 'Next: ' + next.label : 'Finish session',
+      function () { AC.engine.nextBlock(); }, 'primary'));
+    wrap.appendChild(band);
+    return wrap;
+  }
+
   function setsBlock(blk, b) {
+    if (b.phase === 'done') return doneBlock(blk, b);
     var a = S().activeSession;
     var isRounds = blk.mode === 'rounds';
     var slot = isRounds ? blk.items[b.itemIndex] : blk.items[b.slotIndex || 0];
@@ -4035,14 +4178,6 @@ AC.screens = (function () {
         wrap.appendChild(h('div', { class: 'nextline', text: 'Next ▸ ' + (ne ? ne.name : '') + ' · ' + repsLabel(nxt.repsTarget) }));
       } else if (b.round + 1 < blk.rounds) nextLabel = 'Log · then rest ' + blk.restSeconds + 's';
       else nextLabel = 'Log · finish block';
-      if (blk.roundsMax && blk.rounds < blk.roundsMax && b.round + 1 === blk.rounds) {
-        wrap.appendChild(h('button', { class: 'listrow', type: 'button',
-          onclick: function () { AC.engine.addRound(); } },
-          h('div', { class: 'listrow-main' },
-            h('div', { class: 'listrow-title', text: 'Add round ' + (blk.rounds + 1) }),
-            h('div', { class: 'listrow-sub', text: 'The program allows up to ' + blk.roundsMax })),
-          use('i-plus')));
-      }
     }
     if (holding) {
       band.appendChild(ui.btn('Stop hold', function () {
@@ -4067,12 +4202,12 @@ AC.screens = (function () {
     return wrap;
   }
 
-  function setList(blk) {
+  function setList(blk, all) {
     var a = S().activeSession;
     var mine = a.entries.filter(function (e) { return e.blockId === blk.id; });
     if (!mine.length) return h('div');
     var list = h('ul', { class: 'setlist' });
-    mine.slice(-4).forEach(function (e, i, arr) {
+    (all ? mine : mine.slice(-4)).forEach(function (e, i, arr) {
       var isLast = a.entries[a.entries.length - 1] === e;
       var bits = [];
       var hadLoad = e.load !== null && e.load !== undefined;
@@ -4399,6 +4534,9 @@ AC.screens = (function () {
   }
   function nextUpText(blk, b) {
     if (!blk || !b) return '';
+    if (b.phase === 'done') {
+      return blk.label + ' done — add one more, or move on';
+    }
     if (blk.mode === 'straight-sets' || blk.mode === 'carry') {
       var slot = blk.items[b.slotIndex || 0];
       if (b.setIndex >= slot.sets) return 'Next block';
@@ -4528,7 +4666,15 @@ AC.screens = (function () {
         AC.engine.logSet({ warmup: true }); render();
       }));
     }
+    if (AC.engine.canGoBack()) {
+      rows.push(row('Back one step', 'Undo the last set, or return to the previous exercise',
+        function () { restCollapsed = false; AC.engine.back(); }));
+    }
     if (a.blockIndex > 0) rows.push(row('Previous block', null, function () { AC.engine.prevBlock(); }));
+    if (a.block && ['straight-sets', 'carry', 'rounds'].indexOf(a.block.mode) >= 0) {
+      rows.push(row(a.block.mode === 'rounds' ? 'Add a round' : 'Add a set',
+        'Extend this block for today only', function () { AC.engine.addSet(); }));
+    }
     rows.push(row('Show today\'s program', null, function () { programSheet(a.dayId); }));
     var s = ui.sheet({ title: 'Session actions', body: rows,
       actions: [ui.btn('Abandon session', function () {

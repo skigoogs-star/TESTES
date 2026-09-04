@@ -44,6 +44,11 @@ async function newPage(opts = {}) {
 }
 const tap = (page, name) => page.getByRole('button', { name }).first().click();
 const state = page => page.evaluate(() => JSON.parse(JSON.stringify(AC.store.get())));
+async function moveOn() {
+  const b = P.getByRole('button', { name: /^(Next:|Finish session)/i });
+  if (await b.count()) { await b.first().click(); return true; }
+  return false;
+}
 async function skipRest() {
   const s = await P.evaluate(() => {
     const a = AC.store.get().activeSession;
@@ -162,7 +167,10 @@ console.log('\nT03  full Day A, start to finish, zero keyboard input');
   }
   let s = await state(page);
   eq('4 main-lift sets logged', s.activeSession.entries.length, 4);
-  ok('advanced to superset', (await hdr()).includes('SUPERSET'));
+  ok('the block waits in its done state', (await hdr()).includes('4 SETS DONE'));
+  ok('and offers another set', (await page.getByRole('button', { name: /Add a set/i }).count()) === 1);
+  await moveOn();
+  ok('moving on reaches the superset', (await hdr()).includes('SUPERSET'));
 
   for (let round = 1; round <= 3; round++) {
     await tapChecked(page.getByRole('button', { name: /^Log/i }), 'log A');
@@ -176,7 +184,9 @@ console.log('\nT03  full Day A, start to finish, zero keyboard input');
   }
   s = await state(page);
   eq('superset logged 6 sets', s.activeSession.entries.length, 10);
-  ok('advanced to EMOM', (await hdr()).includes('EMOM'));
+  ok('the superset waits in its done state', (await hdr()).includes('3 ROUNDS DONE'));
+  await moveOn();
+  ok('moving on reaches the EMOM', (await hdr()).includes('EMOM'));
 
   await tapChecked(page.getByRole('button', { name: /Start EMOM/i }), 'start emom');
   await page.clock.runFor(8 * 60 * 1000 + 500);
@@ -653,23 +663,28 @@ console.log('\nT11  regressions from review');
     AC.engine.start('day-a');
     AC.engine.nextBlock();                       // into the main lift
     for (let i = 0; i < 4; i++) { AC.engine.logSet(); AC.engine.endRest(); }
+    const doneIn = AC.store.get().activeSession;
+    const donePhase = doneIn.block.phase;
+    AC.engine.nextBlock();
     const afterBlock = AC.store.get().activeSession;
     const wasIn = afterBlock.blocks[afterBlock.blockIndex].id;
     AC.engine.undoLastSet();
     const a = AC.store.get().activeSession;
     return {
-      wasIn,
+      donePhase, wasIn,
       backIn: a.blocks[a.blockIndex].id,
       entries: a.entries.length,
       setIndex: a.block.setIndex
     };
   });
-  eq('four sets finish the block', undo.wasIn, 'a-ss');
+  eq('the last set leaves the block in its done state', undo.donePhase, 'done');
+  eq('moving on reaches the superset', undo.wasIn, 'a-ss');
   eq('undo steps back into the main lift', undo.backIn, 'a-main');
   eq('the set is removed', undo.entries, 3);
   eq('the counter matches the entries', undo.setIndex, 3);
   const prev = await page.evaluate(() => {
-    AC.engine.logSet(); AC.engine.endRest();     // that completes the block -> superset
+    AC.engine.logSet(); AC.engine.endRest();     // completes the block
+    AC.engine.nextBlock();                        // move on to the superset
     AC.engine.prevBlock();                        // step back into the main lift
     const a = AC.store.get().activeSession;
     return { blockId: a.blocks[a.blockIndex].id, setIndex: a.block.setIndex,
@@ -1008,6 +1023,7 @@ console.log('\nT13  the fixes did not break the happy paths');
     AC.engine.start('day-b');
     for (let i = 0; i < 4; i++) AC.engine.nextBlock();
     for (let i = 0; i < 4; i++) { AC.engine.logSet(); AC.engine.endRest(); }
+    AC.engine.nextBlock();
     const moved = AC.store.get().activeSession;
     const movedOn = moved.blocks[moved.blockIndex].id;
     AC.engine.undoLastSet();
@@ -1037,6 +1053,125 @@ console.log('\nT13  the fixes did not break the happy paths');
   eq('with a metric increment', kg.inc, 2.5);
   eq('the set keeps the unit it was logged in', [kg.load, kg.loadUnit], [100, 'kg']);
   ok('and volume converts to lb for the charts', Math.abs(kg.vol - 1102) < 5, String(kg.vol));
+  await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- T14 */
+console.log('\nT14  back a step, and add a set');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await tap(page, /Start session/i);
+
+  // Back is not offered before there is anywhere to go.
+  ok('no Back on the first block', (await page.getByRole('button', { name: /Go back/i }).count()) === 0);
+
+  const checks = page.locator('button.check');
+  for (let i = 0, n = await checks.count(); i < n; i++) await checks.nth(i).click();
+  await tap(page, /^Continue/i);
+  ok('now on the main lift', (await hdr()).includes('SET 1 OF 4'));
+
+  // Pressed Continue by mistake: Back returns to prep with the ticks intact.
+  const backBtn = page.getByRole('button', { name: /Go back/i });
+  ok('Back is offered once you have moved forward', (await backBtn.count()) === 1);
+  const bb = await backBtn.boundingBox();
+  ok('and it is a full-size tap target', bb.height >= 44, Math.round(bb.height) + 'px');
+  await backBtn.click();
+  ok('Back returns to prep', (await hdr()).includes('PREP'));
+  const ticks = await page.evaluate(() => AC.store.get().activeSession.block.checked.length);
+  eq('with the ticks still there', ticks, 4);
+  await tap(page, /^Continue/i);
+
+  // Pressed Log by mistake: Back removes that set and returns to it.
+  await page.getByRole('button', { name: /^Log set/i }).click();
+  await page.waitForTimeout(80);
+  eq('a set was logged', (await state(page)).activeSession.entries.length, 1);
+  await skipRest();
+  ok('now on set 2', (await hdr()).includes('SET 2 OF 4'));
+  await page.getByRole('button', { name: /Go back/i }).click();
+  await page.waitForTimeout(80);
+  const afterBack = await state(page);
+  eq('Back removed the mistaken set', afterBack.activeSession.entries.length, 0);
+  ok('and returned to set 1', (await hdr()).includes('SET 1 OF 4'));
+
+  // Four sets, then a fifth because you had one in you.
+  for (let i = 0; i < 4; i++) {
+    await page.getByRole('button', { name: /^Log set/i }).click();
+    await page.waitForTimeout(60);
+    await skipRest();
+  }
+  ok('the block reports itself done', (await hdr()).includes('4 SETS DONE'));
+  await page.getByRole('button', { name: /Add a set/i }).click();
+  await page.waitForTimeout(80);
+  ok('adding a set reopens the block at set 5', (await hdr()).includes('SET 5 OF 5'));
+  await page.getByRole('button', { name: /^Log set/i }).click();
+  await page.waitForTimeout(60);
+  await skipRest();
+  const five = await state(page);
+  eq('five sets are logged', five.activeSession.entries.filter(e => e.blockId === 'a-main').length, 5);
+  ok('and the block is done again', (await hdr()).includes('5 SETS DONE'));
+
+  // Moving on, then realising you were not finished.
+  await moveOn();
+  ok('moving on reaches the superset', (await hdr()).includes('SUPERSET'));
+  await skipRest();
+  await page.getByRole('button', { name: /Go back/i }).click();
+  await page.waitForTimeout(80);
+  const returned = await state(page);
+  ok('Back returns to the main lift', (await hdr()).includes('5 SETS DONE'));
+  eq('without deleting anything', returned.activeSession.entries.filter(e => e.blockId === 'a-main').length, 5);
+  await moveOn();
+  await skipRest();
+
+  // A superset gets another round the same way.
+  for (let round = 1; round <= 3; round++) {
+    await page.getByRole('button', { name: /^Log/i }).click();
+    await page.waitForTimeout(60);
+    await page.getByRole('button', { name: /^Log/i }).click();
+    await page.waitForTimeout(60);
+    await skipRest();
+  }
+  ok('the superset reports itself done', (await hdr()).includes('3 ROUNDS DONE'));
+  await page.getByRole('button', { name: /Add a round/i }).click();
+  await page.waitForTimeout(80);
+  ok('adding a round reopens it at round 4', (await hdr()).includes('ROUND 4 OF 4'));
+  const rounds = await page.evaluate(() => {
+    const a = AC.store.get().activeSession;
+    return a.blocks[a.blockIndex].rounds;
+  });
+  eq('the block now runs four rounds', rounds, 4);
+  const seeded = await page.evaluate(() =>
+    AC.store.get().program.days[0].blocks[2].rounds);
+  eq('and the seeded program is untouched', seeded, 3);
+  await ctx.close();
+}
+{
+  // Stepping back and forward through an EMOM must not log it twice.
+  const { ctx, page } = await newPage();
+  await page.clock.install();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const emom = await page.evaluate(() => {
+    AC.engine.start('day-a');
+    for (let i = 0; i < 3; i++) AC.engine.nextBlock();     // to the finisher
+    AC.engine.startEmom();
+    return AC.store.get().activeSession.block.status;
+  });
+  eq('the EMOM is running', emom, 'running');
+  await page.clock.runFor(8 * 60 * 1000 + 500);
+  await page.waitForTimeout(60);
+  const round = await page.evaluate(() => {
+    const before = AC.store.get().activeSession.entries.length;
+    AC.engine.nextBlock();          // on to mobility
+    AC.engine.prevBlock();          // and back again
+    const a = AC.store.get().activeSession;
+    return { before, after: a.entries.length, status: a.block.status };
+  });
+  eq('eight rounds were logged', round.before, 8);
+  eq('stepping back and forward logs nothing extra', round.after, 8);
+  eq('and the block reopens as finished', round.status, 'finished');
   await ctx.close();
 }
 

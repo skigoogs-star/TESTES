@@ -11,6 +11,15 @@ no server, and no network traffic after the page loads.
 - **Runs the session.** Prep checklist → main lift → superset → finisher →
   mobility, with the right input for each: straight sets, superset rounds, an
   EMOM finisher, sprint intervals, loaded carries, and timed holds.
+- **You decide when a block is over.** Log the prescribed sets and the block
+  says it's done rather than moving on by itself: **+ Add a set** (or **+ Add a
+  round** in a superset) keeps you there for as long as you have something left,
+  and **Next** moves on when you're ready. Anything you add applies to today
+  only — the program itself is untouched.
+- **One Back button that undoes whatever you just did.** Logged a set by
+  mistake, it removes that set and puts you back on it. Moved past an exercise
+  by mistake, it returns you there with everything you logged intact, and a prep
+  checklist keeps its ticks.
 - **Never asks for the keyboard mid-workout.** Load, reps, distance and RPE are
   all steppers and chips. Tapping a number opens the app's own numeric pad, not
   the OS keyboard.
@@ -44,7 +53,7 @@ thing as JSON from **More**.
 ## Tests
 
 ```
-node tests/run.mjs      # 190 checks, headless Chromium
+node tests/run.mjs      # 219 checks, headless Chromium
 node tests/shots.mjs    # screenshots of every screen into tests/shots/
 ```
 
@@ -59,6 +68,9 @@ malformed backup are rejected without touching stored data, undo across a block
 boundary rewinds correctly, a Sunday-evening session in `America/Los_Angeles`
 counts toward the local week rather than the UTC one, a timed hold logs the item
 it was started for, and the second exercise of a superset shows its own cues.
+Back and Add-a-set have their own cases: a mistaken set is removed and returned
+to, a block you moved past comes back whole, an added set extends only today's
+session, and stepping back and forward through an EMOM logs nothing twice.
 It also asserts the drawing invariants directly: no stick figure may change a
 limb's length between its two frames, and the light theme must resolve the
 darker amber used for non-text graphics.
