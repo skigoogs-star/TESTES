@@ -2118,6 +2118,9 @@ AC.router = (function () {
     var target = '#/' + route + (param ? '/' + encodeURIComponent(param) : '');
     if (location.hash === target) { fire(); return; }
     location.hash = target;
+    /* hashchange is asynchronous; render now so the old screen never shows
+       for a frame after a navigation. The later event re-renders harmlessly. */
+    fire();
   }
   function fire() { var c = parse(); handlers.forEach(function (f) { f(c); }); }
   function onChange(fn) { handlers.push(fn); }
@@ -4703,19 +4706,46 @@ AC.screens = (function () {
         s.close(); render();
       }, 'primary')] });
   }
+  function blockCard(b, current) {
+    var rounds = b.mode === 'rounds' && b.rounds ? ' · ' + b.rounds + ' rounds' : '';
+    return h('div', { class: 'stack-2' },
+      h('div', { class: 'cap', style: current ? 'color:var(--primary-text)' : null,
+        text: (current ? '▸ ' : '') + b.label + (b.targetMinutes ? ' · ' + b.targetMinutes + ' min' : '') + rounds }),
+      b.instructions ? h('div', { style: 'font-size:var(--fs-label);color:var(--text-2)', text: b.instructions }) : null,
+      h('ul', { class: 'stack-2' }, (b.items || []).map(function (it) {
+        var ex = S().exercises[it.exerciseId];
+        return h('li', { style: 'font-size:var(--fs-label)',
+          text: '· ' + (ex ? ex.name : it.exerciseId) + ' — ' + (it.sets > 1 ? it.sets + ' × ' : '') + repsLabel(it.repsTarget) +
+            (it.rpeTarget ? ' @ RPE ' + it.rpeTarget : '') });
+      })));
+  }
   function programSheet(dayId) {
     var day = dayById(dayId);
-    var body = day.blocks.map(function (b) {
-      return h('div', { class: 'stack-2' },
-        h('div', { class: 'cap', text: b.label + ' · ' + b.targetMinutes + ' min' }),
-        h('div', { style: 'font-size:var(--fs-label);color:var(--text-2)', text: b.instructions || '' }),
-        h('ul', { class: 'stack-2' }, b.items.map(function (it) {
-          var ex = S().exercises[it.exerciseId];
-          return h('li', { style: 'font-size:var(--fs-label)',
-            text: '· ' + (ex ? ex.name : it.exerciseId) + ' — ' + (it.sets > 1 ? it.sets + ' × ' : '') + repsLabel(it.repsTarget) +
-              (it.rpeTarget ? ' @ RPE ' + it.rpeTarget : '') });
-        })));
-    });
+    var a = S().activeSession;
+    var live = a && a.dayId === dayId && a.blocks && a.blocks.length;
+    var body = [];
+    /* A running session is the truth: it carries the Day E option you picked,
+       the Day D swap, and any set you added today. */
+    var blocks = live ? a.blocks : day.blocks;
+    if (day.note) body.push(h('p', { class: 'hint', text: day.note }));
+    if (live && a.dayOptionId && day.options) {
+      var opt = day.options.filter(function (o) { return o.id === a.dayOptionId; })[0];
+      if (opt) body.push(h('p', { style: 'font-size:var(--fs-label);color:var(--text-2)',
+        text: opt.label + ' — ' + opt.description }));
+    }
+    if (blocks && blocks.length) {
+      blocks.forEach(function (b, i) { body.push(blockCard(b, live && i === a.blockIndex)); });
+    } else if (day.options) {
+      /* Day E off-session: the day is a choice, so show the choices. */
+      day.options.forEach(function (o) {
+        body.push(h('div', { class: 'stack-2' },
+          h('div', { class: 'cap', text: o.label }),
+          h('div', { style: 'font-size:var(--fs-label);color:var(--text-2)', text: o.description })));
+        (o.blocks || []).forEach(function (b) { body.push(blockCard(b, false)); });
+      });
+    } else {
+      body.push(h('p', { class: 'hint', text: 'Nothing scheduled for this day.' }));
+    }
     ui.sheet({ title: 'Day ' + day.letter + ' — ' + day.label, body: body });
   }
 
@@ -5515,6 +5545,7 @@ AC.screens = (function () {
   }
 
   return { render: render, tickUI: tickUI, applyTheme: applyTheme, applyHand: applyHand, startFlow: startFlow,
+    showProgram: programSheet,
     doExport: doExport, doImport: doImport, saveMetric: saveMetric,
     _setRestCollapsed: function (v) { restCollapsed = v; } };
 })();

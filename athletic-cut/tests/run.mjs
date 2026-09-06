@@ -1064,6 +1064,7 @@ console.log('\nT14  back a step, and add a set');
   await page.goto(BASE);
   await tap(page, /Begin week 1/i);
   await tap(page, /Start session/i);
+  await page.waitForSelector('.runner button.check');
 
   // Back is not offered before there is anywhere to go.
   ok('no Back on the first block', (await page.getByRole('button', { name: /Go back/i }).count()) === 0);
@@ -1172,6 +1173,90 @@ console.log('\nT14  back a step, and add a set');
   eq('eight rounds were logged', round.before, 8);
   eq('stepping back and forward logs nothing extra', round.after, 8);
   eq('and the block reopens as finished', round.status, 'finished');
+  await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- T15 */
+console.log('\nT15  "Show today\'s program" on every day');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+
+  // Day E: the blocks live under the chosen option, not on the day.
+  await page.evaluate(() => {
+    AC.engine.start('day-e', 'kb-complex');
+    AC.router.go('session');
+    AC.screens.render();
+  });
+  await page.waitForSelector('.runner');
+  await page.getByRole('button', { name: /More session actions/i }).click();
+  await page.getByRole('button', { name: /Show today/i }).click();
+  await page.waitForSelector('.sheet');
+  const e = await page.evaluate(() => {
+    const sheet = document.querySelector('.sheet');
+    return { title: sheet.querySelector('.sheet-title').textContent,
+             text: sheet.querySelector('.sheet-body').innerText,
+             rows: sheet.querySelectorAll('.sheet-body li').length };
+  });
+  ok('the Day E sheet is titled for the day', /Day E/.test(e.title), e.title);
+  ok('and is not empty', e.rows > 0, e.rows + ' rows');
+  ok('it names the option that is running', /Kettlebell complex/.test(e.text), e.text.slice(0, 80));
+  ok('and lists the movements', /Kettlebell clean/.test(e.text) && /Kettlebell swing/.test(e.text), e.text.slice(0, 200));
+  await page.keyboard.press('Escape');
+
+  // A set added today shows up in the sheet.
+  const added = await page.evaluate(async () => {
+    AC.engine.abandon();
+    AC.engine.start('day-a');
+    AC.engine.nextBlock();
+    AC.engine.addSet();
+    AC.router.go('session'); AC.screens.render();
+    await new Promise(r => setTimeout(r, 30));
+    return AC.store.get().activeSession.blocks[1].items[0].sets;
+  });
+  eq('the main lift now runs five sets today', added, 5);
+  await page.getByRole('button', { name: /More session actions/i }).click();
+  await page.getByRole('button', { name: /Show today/i }).click();
+  await page.waitForSelector('.sheet');
+  const live = await page.evaluate(() => document.querySelector('.sheet .sheet-body').innerText);
+  ok('and the sheet shows five, not the seeded four', /5 × 5 reps/.test(live), live.slice(0, 200));
+  ok('the block you are in is marked', /▸/.test(live));
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => AC.engine.abandon());
+
+  // Off-session, Day E is a choice, so the sheet lists the choices.
+  const off = await page.evaluate(async () => {
+    AC.router.go('home'); AC.screens.render();
+    AC.screens.showProgram('day-e');
+    await new Promise(r => setTimeout(r, 30));
+    return document.querySelector('.sheet .sheet-body').innerText;
+  });
+  ok('all three Day E options are listed',
+    /sport/i.test(off) && /kettlebell complex/i.test(off) && /nothing/i.test(off), off.slice(0, 200));
+  await ctx.close();
+}
+{
+  // Every day's sheet has content.
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const all = await page.evaluate(async () => {
+    const out = {};
+    for (const d of AC.store.get().program.days) {
+      AC.screens.showProgram(d.id);
+      await new Promise(r => setTimeout(r, 20));
+      const el = document.querySelector('.sheet .sheet-body');
+      out[d.id] = el ? el.innerText.trim().length : 0;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await new Promise(r => setTimeout(r, 20));
+    }
+    return out;
+  });
+  Object.keys(all).forEach(function (id) {
+    ok(id + ' has a program sheet', all[id] > 40, all[id] + ' chars');
+  });
   await ctx.close();
 }
 
