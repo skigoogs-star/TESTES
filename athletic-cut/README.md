@@ -36,6 +36,13 @@ no server, and no network traffic after the page loads.
 - **Tells you when it's calories, not effort.** Two flat weeks on a main lift
   raises the program's own advice. The weekly review reads the bodyweight trend
   and warns when you're losing faster than 1.5 lb/week.
+- **Exports the week as one Markdown document.** **More → Weekly report**, or the
+  button at the top of Progress. It contains adherence against the four required
+  days, every set with its load, reps and RPE, estimated 1RM per main lift
+  against the previous week, tonnage and volume by movement pattern, daily
+  bodyweight with the week-over-week change, the nutrition table with a
+  days-on-target count, EMOM rounds and sprint efforts, and your session notes.
+  Copy is the primary action, because pasting it into a chat is the point.
 - **Charts what matters.** Bodyweight as raw dots under a dominant 7-day rolling
   average, waist against its target band, estimated 1RM per main lift (Epley),
   and weekly volume by movement pattern.
@@ -53,7 +60,7 @@ thing as JSON from **More**.
 ## Tests
 
 ```
-node tests/run.mjs      # 232 checks, headless Chromium
+node tests/run.mjs      # 261 checks, headless Chromium
 node tests/shots.mjs    # screenshots of every screen into tests/shots/
 ```
 

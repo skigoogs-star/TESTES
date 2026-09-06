@@ -1260,6 +1260,106 @@ console.log('\nT15  "Show today\'s program" on every day');
   await ctx.close();
 }
 
+
+/* ---------------------------------------------------------------- T16 */
+console.log('\nT16  weekly Markdown report');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const md = await page.evaluate(() => {
+    const U = AC.util;
+    const ws = U.weekStart(U.todayKey());
+    const prev = U.addDays(ws, -7);
+    const D = n => U.addDays(ws, n);
+    const set = o => Object.assign({ loadUnit: 'lb', rpe: null, seconds: null, distanceM: null,
+      isWarmup: false, completedAt: '2026-01-01T00:00:00.000Z' }, o);
+    const ses = (id, dayId, date, entries, blockResults, extra) => Object.assign({
+      id, dayId, dayOptionId: null, startedAt: date + 'T10:00:00.000Z', completedAt: date + 'T10:40:00.000Z',
+      dateKey: date, status: 'complete', sessionRPE: 8, bodyweightAtTime: 197.5, notes: '',
+      blockResults: blockResults || [], entries,
+      totals: { volumeLb: 0, setsLogged: entries.length, durationSec: 2340 }, beatLast: [] }, extra || {});
+    AC.store.update(s => {
+      s.schedule.programStartDate = U.addDays(ws, -14);
+      s.sessions = [
+        ses('p1', 'day-a', U.addDays(prev, 0), [
+          set({ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: 0, load: 245, reps: 5, rpe: 8 })]),
+        ses('s1', 'day-a', D(0), [
+          set({ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: 0, load: 250, reps: 5, rpe: 8 }),
+          set({ blockId: 'a-ss', slotId: 'a-ss-2', exerciseId: 'hanging-leg-raise', setIndex: 0, load: null, reps: 10 }),
+          set({ blockId: 'a-fin', slotId: 'a-fin-1', exerciseId: 'kettlebell-swing', setIndex: 0, load: 24, loadUnit: 'kg', reps: 12 })],
+          [{ blockId: 'a-prep', mode: 'checklist', checked: ['a-prep-1', 'a-prep-2'] },
+           { blockId: 'a-fin', mode: 'emom', roundsCompleted: 7, roundsTarget: 8, load: 24 }],
+          { notes: 'Back felt tight.' }),
+        ses('s2', 'day-b', D(2), [
+          set({ blockId: 'b-fin', slotId: 'b-fin-1', exerciseId: 'farmers-carry', setIndex: 0, load: 70, reps: null, distanceM: 40 })]),
+      ];
+      s.metrics = [];
+      [198.6, 198.2, 197.9, 197.6, 197.4].forEach((v, i) =>
+        s.metrics.push({ id: 'w' + i, date: D(i), type: 'weight', value: v, unit: 'lb', source: 'manual' }));
+      [199.6, 199.4, 199.2, 199.0].forEach((v, i) =>
+        s.metrics.push({ id: 'p' + i, date: U.addDays(prev, i), type: 'weight', value: v, unit: 'lb', source: 'manual' }));
+      s.nutrition = {};
+      s.nutrition[D(0)] = { calories: 2640, proteinG: 196, steps: 9100 };
+      s.nutrition[D(1)] = { calories: 2900, proteinG: 180, steps: 6100 };
+    });
+    return AC.report.weekly(0);
+  });
+
+  ok('it is Markdown with a title', /^# Athletic Cut — week of /.test(md), md.slice(0, 60));
+  ok('every heading has a blank line before it', md.split('\n').every((l, i, L) =>
+    !/^#{1,3} /.test(l) || i === 0 || L[i - 1].trim() === ''));
+  ok('it names the program week', /program week 3 of 12/.test(md));
+  ok('adherence counts the required days', /Required sessions: \*\*2 of 4\*\*/.test(md));
+  ok('and names what was missed', /Not done this week: Day C, Day D/.test(md));
+  ok('it reports tonnage', /total tonnage [\d,]+ lb/.test(md));
+  ok('bodyweight is tabled per day', /\| Weight \(lb\) \|/.test(md) && /198\.6/.test(md));
+  ok('with a week-over-week change', /Previous week: .* → change/.test(md));
+  ok('nutrition is tabled with an on-target column', /\| Date \| kcal \| Protein \(g\) \| Steps \| On target \|/.test(md));
+  ok('sets carry load, reps and RPE', /250 lb × 5 @8/.test(md), md.match(/.*250 lb.*/) || '');
+  ok('bodyweight sets read as reps', /10 reps/.test(md));
+  ok('kettlebell keeps its own unit', /24 kg × 12/.test(md));
+  ok('carries record distance', /70 lb × 40 m/.test(md));
+  ok('an estimated 1RM is given for main lifts', /est\. 1RM \d+ lb/.test(md));
+  ok('but not for accessories', !/Hanging leg raise.*est\. 1RM/.test(md));
+  ok('EMOM rounds are reported', /8 rounds at 24 kg/.test(md) || /7 of 8 rounds at 24 kg/.test(md));
+  ok('the session note is included', /Back felt tight/.test(md));
+  ok('main lifts compare week over week', /\| Lift \| This week \| Previous week \| Change \|/.test(md));
+  ok('volume by pattern is tabled', /\| Pattern \| Working sets \| Volume \(lb\) \|/.test(md));
+  ok('carried metres are accounted for', /Loaded carries: 40 m/.test(md));
+  ok('it closes with the ask', /\*\*Ask Claude:\*\*/.test(md));
+  ok('it stays small enough to paste', md.length < 20000, md.length + ' chars');
+
+  const prevWeek = await page.evaluate(() => AC.report.weekly(-1));
+  ok('last week can be exported too', /week of /.test(prevWeek) && /245 lb × 5 @8/.test(prevWeek));
+  ok('and does not contain this week\'s sets', !/250 lb × 5/.test(prevWeek));
+
+  const empty = await page.evaluate(() => AC.report.weekly(-6));
+  ok('an empty week still produces a report', /# Athletic Cut/.test(empty) && /No sessions this week/.test(empty));
+
+  // The sheet, and the copy path.
+  await page.evaluate(() => { AC.router.go('more'); AC.screens.render(); });
+  await page.getByRole('button', { name: /Weekly report/i }).first().click();
+  await page.waitForSelector('.sheet');
+  const sheet = await page.evaluate(() => {
+    const t = document.querySelector('.sheet textarea');
+    return { chars: t.value.length, title: document.querySelector('.sheet-title').textContent,
+      buttons: [...document.querySelectorAll('.sheet .btn')].map(b => b.textContent.trim()) };
+  });
+  ok('the sheet is populated', sheet.chars > 500, sheet.chars + ' chars');
+  ok('with Copy as the primary action', /Copy/.test(sheet.buttons.join(' ')), JSON.stringify(sheet.buttons));
+  const switched = await page.evaluate(async () => {
+    const before = document.querySelector('.sheet textarea').value;
+    [...document.querySelectorAll('.sheet [role=radio]')].find(b => /Last week/.test(b.textContent)).click();
+    await new Promise(r => setTimeout(r, 40));
+    return { changed: document.querySelector('.sheet textarea').value !== before,
+      radios: document.querySelectorAll('.sheet [role=radio]').length };
+  });
+  ok('the week picker switches the report', switched.changed);
+  eq('and stays a single picker', switched.radios, 3);
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 console.log('\n' + (fail ? '\x1b[31m' : '\x1b[32m') + pass + ' passed, ' + fail + ' failed\x1b[0m');

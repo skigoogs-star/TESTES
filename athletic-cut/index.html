@@ -3493,6 +3493,306 @@ AC.engine = (function () {
 /* --------------------------------------------------------------------------
    15. charts — hand-rolled SVG. No library, no canvas.
    -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   15b. report — a week as one pasteable Markdown document.
+   Everything a coach would need to judge the week and nothing that needs a
+   parser: what was lifted, what moved, what was eaten, what was missed.
+   -------------------------------------------------------------------------- */
+AC.report = (function () {
+  var U = AC.util;
+  function S() { return AC.store.get(); }
+
+  function num(v, dp) { return v === null || v === undefined || isNaN(v) ? '—' : U.num(v, dp); }
+  function signed(v, dp, unit) {
+    if (v === null || v === undefined || isNaN(v)) return '—';
+    var r = U.num(Math.abs(v), dp);
+    return (v > 0 ? '+' : v < 0 ? '−' : '') + r + (unit ? ' ' + unit : '');
+  }
+  function fmtSet(e) {
+    var bits = [];
+    var hasLoad = e.load !== null && e.load !== undefined && e.load !== 0;
+    if (hasLoad) bits.push(U.num(e.load, e.load % 1 ? 1 : 0) + ' ' + (e.loadUnit || 'lb'));
+    if (e.reps !== null && e.reps !== undefined) bits.push(hasLoad ? '× ' + e.reps : e.reps + ' reps');
+    if (e.distanceM) bits.push('× ' + e.distanceM + ' m');
+    if (e.seconds && (e.reps === null || e.reps === undefined)) bits.push(e.seconds + ' s');
+    var line = bits.join(' ') || '—';
+    if (e.rpe) line += ' @' + e.rpe;
+    if (e.isWarmup) line += ' (warm-up)';
+    return line;
+  }
+  function inRange(d, start, end) { return d >= start && d <= end; }
+
+  function sessionsIn(start, end) {
+    return S().sessions.filter(function (x) {
+      return inRange(AC.stats.sessionDay(x), start, end);
+    }).sort(function (a, b) { return AC.stats.sessionDay(a) < AC.stats.sessionDay(b) ? -1 : 1; });
+  }
+  function metricsIn(type, start, end) {
+    return AC.stats.metricsOfType(type).filter(function (m) { return inRange(m.date, start, end); });
+  }
+
+  function sessionSection(sess, out) {
+    var st = S();
+    var day = st.program.days.filter(function (d) { return d.id === sess.dayId; })[0] || { letter: '?', label: '' };
+    var mins = Math.round((sess.totals && sess.totals.durationSec || 0) / 60);
+    var head = '### Day ' + day.letter + ' — ' + day.label + ' · ' + U.fmtDateLong(AC.stats.sessionDay(sess));
+    if (mins) head += ' · ' + mins + ' min';
+    if (sess.sessionRPE) head += ' · session RPE ' + sess.sessionRPE;
+    if (sess.status !== 'complete') head += ' · **' + sess.status.toUpperCase() + '**';
+    out.push(head, '');
+    if (sess.dayOptionId) out.push('Option: ' + sess.dayOptionId, '');
+
+    /* Working sets, grouped by exercise in the order they were performed. */
+    var order = [], byEx = {};
+    (sess.entries || []).forEach(function (e) {
+      if (!byEx[e.exerciseId]) { byEx[e.exerciseId] = []; order.push(e.exerciseId); }
+      byEx[e.exerciseId].push(e);
+    });
+    if (!order.length) out.push('_No sets logged._', '');
+    order.forEach(function (id) {
+      var ex = st.exercises[id] || { name: id, isMainLift: false };
+      var sets = byEx[id];
+      var line = '- **' + ex.name + '**' + (ex.isMainLift ? ' _(main lift)_' : '') + ' — ' +
+        sets.map(fmtSet).join(', ');
+      if (ex.isMainLift) {
+        var best = AC.stats.sessionBest(sess, id);
+        var added = id === 'weighted-pull-up' || id === 'pull-up' || id === 'dip';
+        if (best !== null) line += ' · est. 1RM ' + num(Math.round(best)) + ' lb' + (added ? ' of added load' : '');
+      }
+      out.push(line);
+    });
+    if (order.length) out.push('');
+
+    (sess.blockResults || []).forEach(function (r) {
+      var blk = null;
+      st.program.days.forEach(function (d) {
+        var all = (d.blocks || []).concat((d.options || []).reduce(function (acc, o) { return acc.concat(o.blocks); }, []));
+        all.forEach(function (b) { if (b.id === r.blockId) blk = b; });
+      });
+      var label = blk ? blk.label : r.blockId;
+      if (r.skipped) { out.push('- ' + label + ': **skipped**'); return; }
+      if (r.mode === 'checklist') {
+        out.push('- ' + label + ': ' + (r.checked || []).length + ' of ' + ((blk && blk.items.length) || '?') + ' done');
+      } else if (r.mode === 'emom') {
+        out.push('- ' + label + ' (EMOM): ' + r.roundsCompleted + ' of ' + r.roundsTarget +
+          ' rounds' + (r.load ? ' at ' + r.load + ' kg' : ''));
+      } else if (r.mode === 'interval') {
+        out.push('- ' + label + ': ' + r.efforts + ' efforts of ' + r.effortSeconds + ' s' +
+          ((r.slowerFlags || []).length ? ', ' + r.slowerFlags.length + ' marked slower' : '') +
+          (r.stoppedEarly ? ', stopped early' : ''));
+      } else if (r.mode === 'freeform') {
+        out.push('- ' + label + ': ' + (r.activity || 'activity') + ', ' + r.minutes + ' min');
+      }
+    });
+    if ((sess.beatLast || []).length) {
+      out.push('', 'Beat last time: ' + sess.beatLast.join('; '));
+    }
+    if (sess.notes) out.push('', 'Note: "' + sess.notes.replace(/\s+/g, ' ').trim() + '"');
+    out.push('');
+  }
+
+  function weekly(offset) {
+    offset = offset || 0;
+    var st = S(), out = [];
+    var today = U.todayKey();
+    var start = U.addDays(U.weekStart(today), offset * 7);
+    var end = U.addDays(start, 6);
+    var prevStart = U.addDays(start, -7), prevEnd = U.addDays(start, -1);
+    var wkKey = U.isoWeekKey(start);
+    var programWeek = Math.floor(U.daysBetween(st.schedule.programStartDate, start) / 7) + 1;
+
+    out.push('# Athletic Cut — week of ' + U.fmtDateLong(start) + ' to ' + U.fmtDateLong(end));
+    out.push('');
+    out.push('Exported ' + U.fmtDateLong(today) + ' · ' + wkKey +
+      ' · program week ' + U.clamp(programWeek, 1, 99) + ' of ' + st.program.weeks);
+    out.push('');
+    out.push('> Goal: ' + st.program.goal);
+    out.push('> Targets: ' + U.num(st.settings.calorieTarget) + ' kcal · ' +
+      st.settings.proteinMinG + '–' + st.settings.proteinMaxG + ' g protein · ' +
+      U.num(st.settings.stepsMin) + '–' + U.num(st.settings.stepsMax) + ' steps · 0.7–1.0 lb/week of loss');
+    out.push('');
+
+    /* ---- adherence ---- */
+    var sessions = sessionsIn(start, end);
+    var done = sessions.filter(function (x) { return x.status === 'complete'; });
+    var required = done.filter(function (x) { return x.dayId !== st.program.optionalDayId; });
+    var letters = required.map(function (x) {
+      var d = st.program.days.filter(function (y) { return y.id === x.dayId; })[0];
+      return d ? 'Day ' + d.letter : x.dayId;
+    });
+    var missing = st.program.requiredDayIds.filter(function (id) {
+      return !required.some(function (x) { return x.dayId === id; });
+    }).map(function (id) {
+      var d = st.program.days.filter(function (y) { return y.id === id; })[0];
+      return d ? 'Day ' + d.letter : id;
+    });
+    out.push('## Adherence', '');
+    out.push('- Required sessions: **' + required.length + ' of 4**' + (letters.length ? ' (' + letters.join(', ') + ')' : ''));
+    if (missing.length) out.push('- Not done this week: ' + missing.join(', '));
+    var optional = done.filter(function (x) { return x.dayId === st.program.optionalDayId; });
+    if (optional.length) out.push('- Optional Day E: ' + optional.length);
+    var abandoned = sessions.filter(function (x) { return x.status === 'abandoned'; });
+    if (abandoned.length) out.push('- Abandoned: ' + abandoned.length);
+    var nextId = st.program.requiredDayIds[st.schedule.nextRequiredIndex];
+    var nextDay = st.program.days.filter(function (d) { return d.id === nextId; })[0];
+    if (nextDay) out.push('- Next in the rotation: Day ' + nextDay.letter + ' — ' + nextDay.label);
+    var tonnage = 0, workSets = 0;
+    done.forEach(function (x) {
+      (x.entries || []).forEach(function (e) {
+        if (e.isWarmup) return;
+        workSets++;
+        tonnage += AC.stats.setVolume(e, x.bodyweightAtTime);
+      });
+    });
+    out.push('- Working sets: ' + workSets + ' · total tonnage ' + num(Math.round(tonnage)) + ' lb');
+    var rpes = done.map(function (x) { return x.sessionRPE; }).filter(function (v) { return v; });
+    if (rpes.length) out.push('- Session RPE: ' + rpes.join(', ') + ' (average ' + num(U.mean(rpes), 1) + ')');
+    out.push('');
+
+    /* ---- bodyweight and waist ---- */
+    out.push('## Bodyweight', '');
+    var w = metricsIn('weight', start, end);
+    if (w.length) {
+      out.push('| Date | Weight (' + st.settings.bodyweightUnit + ') |');
+      out.push('|---|---|');
+      w.forEach(function (m) { out.push('| ' + U.fmtDate(m.date) + ' | ' + num(m.value, 1) + ' |'); });
+      out.push('');
+      var avg = U.mean(w.map(function (m) { return m.value; }));
+      var prevW = metricsIn('weight', prevStart, prevEnd);
+      var prevAvg = prevW.length ? U.mean(prevW.map(function (m) { return m.value; })) : null;
+      out.push('- Week average: **' + num(avg, 1) + ' ' + st.settings.bodyweightUnit + '** from ' + w.length + ' weigh-ins');
+      if (prevAvg !== null) {
+        var loss = prevAvg - avg;
+        var verdict = loss >= 0.7 && loss <= 1.0 ? 'on target'
+          : loss > 1.5 ? 'too fast — this costs lean mass'
+          : loss > 1.0 ? 'slightly fast'
+          : loss < 0.2 ? 'stalled' : 'under target';
+        out.push('- Previous week: ' + num(prevAvg, 1) + ' → change **' + signed(-loss, 1) + '** (' + verdict + ')');
+      } else {
+        out.push('- No previous week to compare against yet.');
+      }
+    } else {
+      out.push('_No weigh-ins logged this week._');
+    }
+    var waist = metricsIn('waist', start, end);
+    var lastWaist = AC.stats.latest('waist');
+    if (waist.length) {
+      out.push('- Waist: ' + waist.map(function (m) { return num(m.value, 1) + ' ' + m.unit + ' (' + U.fmtDate(m.date) + ')'; }).join(', ') +
+        ' · target 30.5–31 in');
+    } else if (lastWaist) {
+      out.push('- Waist: not measured this week (last: ' + num(lastWaist.value, 1) + ' ' + lastWaist.unit + ' on ' + U.fmtDate(lastWaist.date) + ')');
+    }
+    out.push('');
+
+    /* ---- nutrition ---- */
+    out.push('## Nutrition and steps', '');
+    var days = [], any = false;
+    for (var i = 0; i < 7; i++) {
+      var k = U.addDays(start, i);
+      var n = st.nutrition[k];
+      if (n && (n.calories !== null || n.proteinG !== null || n.steps !== null)) any = true;
+      days.push({ date: k, n: n || {} });
+    }
+    if (any) {
+      out.push('| Date | kcal | Protein (g) | Steps | On target |');
+      out.push('|---|---|---|---|---|');
+      days.forEach(function (d) {
+        var row = Object.assign({ date: d.date, calories: null, proteinG: null, steps: null }, d.n);
+        out.push('| ' + U.fmtDate(d.date) + ' | ' + num(row.calories) + ' | ' + num(row.proteinG) +
+          ' | ' + num(row.steps) + ' | ' + (AC.stats.onTarget(row) ? 'yes' : 'no') + ' |');
+      });
+      out.push('');
+      var logged = days.filter(function (d) { return d.n.calories !== null && d.n.calories !== undefined; });
+      out.push('- Averages over ' + logged.length + ' logged day' + (logged.length === 1 ? '' : 's') + ': ' +
+        num(U.mean(logged.map(function (d) { return d.n.calories; })), 0) + ' kcal · ' +
+        num(U.mean(logged.map(function (d) { return d.n.proteinG; })), 0) + ' g protein · ' +
+        num(U.mean(logged.map(function (d) { return d.n.steps; })), 0) + ' steps');
+      out.push('- Days hitting all three targets: **' +
+        days.filter(function (d) { return AC.stats.onTarget(Object.assign({ date: d.date }, d.n)); }).length + ' of 7**');
+    } else {
+      out.push('_Nothing logged this week._');
+    }
+    out.push('');
+
+    /* ---- the sessions themselves ---- */
+    out.push('## Sessions', '');
+    if (!sessions.length) out.push('_No sessions this week._', '');
+    sessions.forEach(function (x) { sessionSection(x, out); });
+
+    /* ---- main lifts, week over week ---- */
+    out.push('## Main lifts — estimated 1RM (Epley)', '');
+    out.push('| Lift | This week | Previous week | Change |');
+    out.push('|---|---|---|---|');
+    Object.keys(AC.stats.MAIN_FAMILIES).forEach(function (fam) {
+      var ids = AC.stats.MAIN_FAMILIES[fam];
+      var wk = AC.stats.weeklyBest(ids);
+      var a = wk[wkKey], b = wk[U.isoWeekKey(prevStart)];
+      var name = (st.exercises[ids[0]] || {}).name || fam;
+      var change = (a !== undefined && b !== undefined) ? signed(a - b, 0, 'lb') : '—';
+      out.push('| ' + name + ' | ' + (a === undefined ? '—' : num(Math.round(a)) + ' lb') +
+        ' | ' + (b === undefined ? '—' : num(Math.round(b)) + ' lb') + ' | ' + change + ' |');
+    });
+    out.push('');
+
+    /* ---- volume ---- */
+    var pattern = AC.stats.setsByPattern(wkKey);
+    var vol = AC.stats.weeklyVolume().filter(function (x) { return x.week === wkKey; })[0];
+    out.push('## Volume by movement pattern', '');
+    var keys = Object.keys(pattern).sort();
+    if (keys.length) {
+      out.push('| Pattern | Working sets | Volume (lb) |');
+      out.push('|---|---|---|');
+      keys.forEach(function (k) {
+        var v = vol && vol.patterns[k];
+        out.push('| ' + k + ' | ' + pattern[k] + ' | ' + (v ? num(Math.round(v)) : 'n/a') + ' |');
+      });
+      var metres = 0, efforts = 0;
+      done.forEach(function (x) {
+        (x.entries || []).forEach(function (e) {
+          if (e.distanceM) metres += e.distanceM;
+          if (e.seconds && (e.reps === null || e.reps === undefined) &&
+              (st.exercises[e.exerciseId] || {}).pattern === 'sprint') efforts++;
+        });
+      });
+      if (metres) out.push('', '- Loaded carries: ' + num(metres) + ' m total');
+      if (efforts) out.push((metres ? '' : '\n') + '- Sprint efforts: ' + efforts);
+    } else out.push('_No working sets this week._');
+    out.push('');
+
+    /* ---- scans ---- */
+    var scans = st.scans.filter(function (x) { return inRange(x.date, start, end); });
+    if (scans.length) {
+      out.push('## Evolt scans', '');
+      scans.forEach(function (x) {
+        out.push('- ' + U.fmtDateLong(x.date) + ': ' + num(x.weight, 1) + ' lb · lean ' + num(x.leanMass, 1) +
+          ' lb · body fat ' + num(x.bodyFatPct, 1) + '% · skeletal muscle ' + num(x.skeletalMuscleMass, 1) +
+          ' lb · visceral ' + num(x.visceralFat) + ' · BMR ' + num(x.bmr) + ' · TEE ' + num(x.tee));
+      });
+      out.push('', '_BIA reads leaner than DEXA by 2–4 points; treat as a trend._', '');
+    }
+
+    /* ---- what the app itself flagged ---- */
+    var flags = AC.stats.stallCheck();
+    if (flags.length) {
+      out.push('## Flags from the app', '');
+      flags.forEach(function (c) { out.push('- ' + c.text); });
+      out.push('');
+    }
+
+    out.push('---', '');
+    out.push('**Ask Claude:** How did this week go against the program? What should change for next week — ' +
+      'calories, load progression, or session structure? Flag anything that looks like it is costing lean mass.');
+    out.push('');
+    return out.join('\n').replace(/\n{3,}/g, '\n\n');
+  }
+
+  function filename(offset) {
+    var start = U.addDays(U.weekStart(U.todayKey()), (offset || 0) * 7);
+    return 'athletic-cut-week-' + start + '.md';
+  }
+  return { weekly: weekly, filename: filename };
+})();
+
 AC.charts = (function () {
   var U = AC.util, NS = 'http://www.w3.org/2000/svg';
   function e(tag, attrs) {
@@ -4990,6 +5290,7 @@ AC.screens = (function () {
     var el = screen({ title: 'Progress', nav: true });
     var today = U.todayKey();
     var xMin = U.addDays(today, -progRange);
+    el.appendChild(ui.btn('Weekly report for Claude', function () { weeklyReport(0); }, 'outline', { small: true }));
     el.appendChild(ui.chipRow({ label: 'Range', value: String(progRange),
       options: [{ id: '28', label: '4w' }, { id: '56', label: '8w' }, { id: '84', label: '12w' }, { id: '3650', label: 'All' }],
       onChange: function (v) { progRange = +v; render(); } }));
@@ -5335,6 +5636,51 @@ AC.screens = (function () {
       });
     });
   }
+  /* The week as one document you can paste into a chat. Copy is the primary
+     action: a sandboxed page cannot always start a download, and pasting is
+     what this is for. */
+  function weeklyReport(offset) {
+    offset = offset || 0;
+    var box = h('textarea', { readonly: true, 'aria-label': 'Weekly report',
+      style: 'font-family:var(--font-mono);font-size:12px;min-height:180px' });
+    var caption = h('p', { class: 'hint' });
+    function load(o) {
+      offset = o;
+      box.value = AC.report.weekly(offset);
+      var kb = Math.max(1, Math.round(box.value.length / 1024));
+      caption.textContent = kb + ' KB of Markdown. Copy it, then paste it into Claude and ask how the week went.';
+      picker.replaceWith(buildPicker());
+    }
+    function buildPicker() {
+      picker = ui.segmented({ label: 'Week', value: String(offset),
+        options: [{ id: '0', label: 'This week' }, { id: '-1', label: 'Last week' }, { id: '-2', label: '2 weeks ago' }],
+        onChange: function (v) { load(+v); } });
+      return picker;
+    }
+    var picker = ui.segmented({ label: 'Week', value: String(offset),
+      options: [{ id: '0', label: 'This week' }, { id: '-1', label: 'Last week' }, { id: '-2', label: '2 weeks ago' }],
+      onChange: function (v) { load(+v); } });
+    var sh = ui.sheet({
+      title: 'Weekly report',
+      body: [picker, caption, h('label', { class: 'field' }, box)],
+      actionsGrid: true,
+      actions: [
+        ui.btn('Save file', function () {
+          AC.io.download(AC.report.filename(offset), box.value);
+          ui.toast('If nothing downloaded, use Copy.', 4000);
+        }, 'ghost'),
+        ui.btn('Copy', function () {
+          AC.io.copyText(box.value, box).then(function (ok) {
+            if (ok) { sh.close(); ui.toast('Report copied — paste it into Claude.', 4000); }
+            else ui.toast('Select the text above and copy it.', 4000);
+          });
+        }, 'primary')
+      ]
+    });
+    load(offset);
+    return sh;
+  }
+
   function doImport() {
     AC.io.pickFile('application/json,.json').then(function (f) {
       if (!f) return;
@@ -5403,6 +5749,11 @@ AC.screens = (function () {
       ui.stepper({ label: 'Step floor', value: s2.stepsMin, step: 500, min: 1000, max: 30000, size: 'xs',
         onChange: function (v) { upd(function (x) { x.stepsMin = v; }); } })));
     body.appendChild(h('div', { class: 'divider' }));
+    body.appendChild(h('button', { class: 'listrow', type: 'button', onclick: function () { weeklyReport(0); } },
+      h('div', { class: 'listrow-main' },
+        h('div', { class: 'listrow-title', text: 'Weekly report (Markdown)' }),
+        h('div', { class: 'listrow-sub', text: 'Sessions, loads, bodyweight and food — to paste into Claude' })),
+      use('i-right')));
     body.appendChild(h('button', { class: 'listrow', type: 'button', onclick: function () { doExport(false); } },
       h('div', { class: 'listrow-main' }, h('div', { class: 'listrow-title', text: 'Export data (JSON)' }),
         h('div', { class: 'listrow-sub', text: 'Everything except video clips' })), use('i-right')));
@@ -5545,7 +5896,7 @@ AC.screens = (function () {
   }
 
   return { render: render, tickUI: tickUI, applyTheme: applyTheme, applyHand: applyHand, startFlow: startFlow,
-    showProgram: programSheet,
+    showProgram: programSheet, weeklyReport: weeklyReport,
     doExport: doExport, doImport: doImport, saveMetric: saveMetric,
     _setRestCollapsed: function (v) { restCollapsed = v; } };
 })();
