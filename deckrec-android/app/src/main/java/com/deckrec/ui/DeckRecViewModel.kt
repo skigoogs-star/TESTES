@@ -190,6 +190,15 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
     private val usbCapture = app.usbCaptureController
 
     /**
+     * Why the mixer could not be opened directly, kept on screen until something changes.
+     *
+     * This used to go out only as a snackbar, which disappears after a few seconds and is consumed:
+     * glance away while the permission dialog closes and the one message that says which of half a
+     * dozen failures happened is gone for good, leaving "it doesn't work" as the only report.
+     */
+    val usbStatus: StateFlow<String?> = usbCapture.status
+
+    /**
      * The USB inspection report, when one has been asked for.
      *
      * Kept out of [uiState] on purpose: that combine is already at the five-flow ceiling, and this
@@ -490,9 +499,8 @@ class DeckRecViewModel(application: Application) : AndroidViewModel(application)
                 val deviceName = input.usbDeviceName ?: return@launch
                 if (usbCapture.open(deviceName, settingsStore.current.sampleRate)) {
                     restartMonitoring(input)
-                } else {
-                    _message.value = usbCapture.status.value
                 }
+                // On failure the reason stays in usbStatus, shown under the input chips.
             }
             return
         }

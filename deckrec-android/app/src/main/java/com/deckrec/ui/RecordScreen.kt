@@ -209,6 +209,17 @@ private fun InputCard(state: RecordUiState, viewModel: DeckRecViewModel) {
             Text(text = status, color = DeckColors.MeterMid, fontSize = 12.sp)
         }
 
+        val usbStatus by viewModel.usbStatus.collectAsStateWithLifecycle()
+        usbStatus?.let { status ->
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "Direct USB: $status",
+                color = DeckColors.MeterClip,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+
         Spacer(Modifier.height(10.dp))
         ConnectionDetails(state, viewModel)
 
