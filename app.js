@@ -6,7 +6,7 @@
 import { getFilters, getFilter, fisheye } from './filters.js';
 import { Mp4Recorder, mp4RecorderSupported } from './mp4-recorder.js';
 
-const APP_VERSION = 'v17'; // keep in sync with VERSION in sw.js
+const APP_VERSION = 'v19'; // keep in sync with VERSION in sw.js
 
 const PREVIEW_MAX_SIDE = 640; // live filtering stays smooth on phones
 const RECORD_MAX_SIDE = 960; // canvas size while recording video
@@ -58,6 +58,9 @@ let audioStream = null;
 let galleryItems = [];
 let galleryUrls = [];
 
+let zoom = 1;
+let zoomCaps = null; // hardware zoom range when the camera exposes one
+
 function brightnessGain() {
   // 1.5 slider units per stop: the ±3 range spans ±2 stops, so each nudge
   // changes the image a third less than the old ±2-stop slider did
@@ -105,21 +108,95 @@ function selectFilter(id) {
 
 /* ---------------- camera ---------------- */
 
-// Phones expose several back lenses (main/ultrawide/macro) and a generic
-// "environment" request can land on one without a flash. The FIRST listed
-// back camera is conventionally the main lens, which has the flash unit.
-// Labels are only readable once camera permission has been granted.
-async function pickBackCameraId() {
+// Phones expose several back lenses (main/ultrawide/macro/depth) and only
+// the main one has the flash unit. Guessing by list order is unreliable, so
+// once the user asks for flash we PROBE the lenses for a real torch (see
+// ensureTorchCamera) and remember the winner here.
+let torchCamId = localStorage.getItem('retrocam-torchcam') || null;
+
+async function listBackCameras() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const backs = devices.filter(
       (d) => d.kind === 'videoinput' && /back|rear|environment/i.test(d.label)
     );
-    if (backs.length) return backs[0].deviceId;
+    // best guess ordering until a torch probe settles it: main lens first
+    // ("camera2 0" on Android), specialty lenses (ultra/tele/macro/depth) last
+    const score = (label) => {
+      if (/camera2 0\b/i.test(label)) return -1;
+      if (/ultra|tele|macro|depth|zoom/i.test(label)) return 1;
+      return 0;
+    };
+    return backs.sort((a, b) => score(a.label) - score(b.label));
   } catch {
-    /* enumeration unavailable */
+    return [];
   }
-  return null;
+}
+
+async function pickBackCameraId() {
+  if (torchCamId) return torchCamId;
+  const backs = await listBackCameras();
+  return backs.length ? backs[0].deviceId : null;
+}
+
+// The torch capability can populate a beat AFTER the camera opens (Chrome
+// quirk), so poll briefly instead of reading once.
+async function trackGrowsTorch(track, tries = 4) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      if (track.getCapabilities && track.getCapabilities().torch) return true;
+    } catch {
+      /* keep polling */
+    }
+    await sleep(200);
+  }
+  return false;
+}
+
+let torchProbeDone = false;
+
+// Find and switch to the back lens that really has the flash. Phones only
+// allow one camera open at a time, so this briefly cycles through lenses
+// the first time flash is enabled, then remembers the winner.
+async function ensureTorchCamera() {
+  const track = stream && stream.getVideoTracks()[0];
+  if (track && (await trackGrowsTorch(track))) {
+    torchProbeDone = true;
+    return true;
+  }
+  if (torchProbeDone) return false; // already searched this session
+  torchProbeDone = true;
+
+  const currentId = track && track.getSettings ? track.getSettings().deviceId : null;
+  const backs = (await listBackCameras()).filter((d) => d.deviceId !== currentId);
+  if (!backs.length) return false;
+
+  stopCamera(); // release the camera so other lenses can open
+  let winner = null;
+  for (const dev of backs) {
+    let probe = null;
+    try {
+      probe = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: dev.deviceId } },
+        audio: false,
+      });
+      const t = probe.getVideoTracks()[0];
+      const hasTorch = await trackGrowsTorch(t);
+      for (const tr of probe.getTracks()) tr.stop();
+      if (hasTorch) {
+        winner = dev.deviceId;
+        break;
+      }
+    } catch {
+      if (probe) for (const tr of probe.getTracks()) tr.stop();
+    }
+  }
+  if (winner) {
+    torchCamId = winner;
+    localStorage.setItem('retrocam-torchcam', winner);
+  }
+  await startCamera(); // reopens with torchCamId when one was found
+  return !!winner;
 }
 
 async function startCamera() {
@@ -136,6 +213,10 @@ async function startCamera() {
         });
       } catch {
         stream = null; // that lens failed — fall back to facingMode below
+        if (backId === torchCamId) {
+          torchCamId = null; // stored lens no longer exists
+          localStorage.removeItem('retrocam-torchcam');
+        }
       }
     }
     if (!stream) {
@@ -151,8 +232,96 @@ async function startCamera() {
   video.srcObject = stream;
   await video.play().catch(() => {});
   preview.classList.toggle('mirrored', facing === 'user');
+  resetZoomForNewCamera();
   renderLoop();
 }
+
+/* ---------------- zoom ---------------- */
+
+const zoomBadge = document.getElementById('zoom-badge');
+
+function refreshZoomCaps() {
+  zoomCaps = null;
+  try {
+    const track = stream && stream.getVideoTracks()[0];
+    const c = track && track.getCapabilities ? track.getCapabilities() : {};
+    if (c.zoom && c.zoom.max > (c.zoom.min || 1)) zoomCaps = c.zoom;
+  } catch {
+    /* no hardware zoom */
+  }
+}
+
+function resetZoomForNewCamera() {
+  zoom = 1;
+  refreshZoomCaps();
+  // zoom capability can populate late, like torch — check again shortly
+  setTimeout(refreshZoomCaps, 600);
+  updateZoomUI();
+}
+
+function maxZoom() {
+  return zoomCaps ? Math.min(zoomCaps.max, 10) : 5;
+}
+
+// digital fallback: how much of the crop the canvas draw must do
+function digitalZoom() {
+  return zoomCaps ? 1 : zoom;
+}
+
+function updateZoomUI() {
+  zoomBadge.textContent = `${zoom.toFixed(1)}×`;
+}
+
+let zoomApplyPending = false;
+
+function setZoom(z) {
+  zoom = Math.min(maxZoom(), Math.max(1, z));
+  updateZoomUI();
+  if (!zoomCaps || zoomApplyPending) return;
+  // hardware zoom: throttle constraint calls while the pinch is moving
+  zoomApplyPending = true;
+  setTimeout(() => {
+    zoomApplyPending = false;
+    const track = stream && stream.getVideoTracks()[0];
+    if (!track) return;
+    const val = Math.min(zoomCaps.max, Math.max(zoomCaps.min || 1, zoom));
+    track.applyConstraints({ advanced: [{ zoom: val }] }).catch(() => {});
+  }, 60);
+}
+
+zoomBadge.addEventListener('click', () => {
+  setZoom(1);
+  showToast('Zoom 1.0×');
+});
+
+// pinch-to-zoom on the viewfinder
+const activePointers = new Map();
+let pinchStart = null;
+
+viewfinder.addEventListener('pointerdown', (e) => {
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size === 2) {
+    const [a, b] = [...activePointers.values()];
+    pinchStart = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom };
+  }
+});
+
+viewfinder.addEventListener('pointermove', (e) => {
+  if (!activePointers.has(e.pointerId)) return;
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinchStart && activePointers.size === 2) {
+    const [a, b] = [...activePointers.values()];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchStart.dist > 0) setZoom(pinchStart.zoom * (dist / pinchStart.dist));
+  }
+});
+
+function endPointer(e) {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinchStart = null;
+}
+viewfinder.addEventListener('pointerup', endPointer);
+viewfinder.addEventListener('pointercancel', endPointer);
 
 function stopCamera() {
   cancelAnimationFrame(rafId);
@@ -186,7 +355,15 @@ function renderLoop() {
   }
 
   previewCtx.filter = brightness ? `brightness(${brightnessGain()})` : 'none';
-  previewCtx.drawImage(video, 0, 0, w, h);
+  const dz = digitalZoom();
+  if (dz > 1.001) {
+    // center-crop digital zoom (hardware zoom handles this in the sensor)
+    const sw2 = vw / dz;
+    const sh2 = vh / dz;
+    previewCtx.drawImage(video, (vw - sw2) / 2, (vh - sh2) / 2, sw2, sh2, 0, 0, w, h);
+  } else {
+    previewCtx.drawImage(video, 0, 0, w, h);
+  }
   previewCtx.filter = 'none';
   const filter = getFilter(activeFilterId);
   const wantFisheye = fisheyeOn && fisheyeAmount > 0;
@@ -259,7 +436,10 @@ function screenFlash(on) {
   flash.classList.toggle('screen', on);
 }
 
+let flashProbing = false;
+
 flashToggle.addEventListener('click', async () => {
+  if (flashProbing) return;
   flashOn = !flashOn;
   flashToggle.classList.toggle('off', !flashOn);
   // if toggled off mid-recording, kill the torch
@@ -274,21 +454,33 @@ flashToggle.addEventListener('click', async () => {
     showToast('Flash on (screen)');
     return;
   }
+  if (recorder) return; // can't switch lenses mid-recording
+
+  flashProbing = true;
+  showToast('Flash: checking…');
   let kind = 'screen';
-  if (await setTorch(true)) {
-    kind = 'torch';
-    if (!recorder) setTorch(false); // probe only — light it for real at capture
-  } else {
-    try {
-      if ('ImageCapture' in window && stream) {
+  try {
+    // switches to the torch-capable back lens when one exists
+    if (await ensureTorchCamera()) {
+      // confirm it truly lights, then turn it off until capture
+      if (await setTorch(true)) {
+        kind = 'torch';
+        await sleep(250); // visible blink = proof for the user
+        setTorch(false);
+      }
+    }
+    if (kind === 'screen' && 'ImageCapture' in window && stream) {
+      try {
         const caps = await new ImageCapture(stream.getVideoTracks()[0]).getPhotoCapabilities();
         if (caps && Array.isArray(caps.fillLightMode) && caps.fillLightMode.includes('flash')) {
           kind = 'camera flash';
         }
+      } catch {
+        /* stay on screen */
       }
-    } catch {
-      /* stay on screen */
     }
+  } finally {
+    flashProbing = false;
   }
   showToast(`Flash on (${kind})`);
 });
@@ -337,7 +529,14 @@ async function takePhoto() {
     ctx.scale(-1, 1);
   }
   ctx.filter = brightness ? `brightness(${brightnessGain()})` : 'none';
-  ctx.drawImage(source, 0, 0, w, h);
+  const dz = digitalZoom();
+  if (dz > 1.001) {
+    const sw2 = sw / dz;
+    const sh2 = sh / dz;
+    ctx.drawImage(source, (sw - sw2) / 2, (sh - sh2) / 2, sw2, sh2, 0, 0, w, h);
+  } else {
+    ctx.drawImage(source, 0, 0, w, h);
+  }
   ctx.filter = 'none';
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   if (flashBitmap) flashBitmap.close();
@@ -807,8 +1006,13 @@ function tapToFocus(e) {
 }
 
 viewfinder.addEventListener('pointerdown', (e) => {
-  // ignore taps on the overlay controls
-  if (e.target.closest('.side-control') || e.target.closest('#flash-toggle') || e.target.closest('#fisheye-toggle')) {
+  // ignore taps on the overlay controls, and second fingers (pinch zoom)
+  if (
+    activePointers.size >= 2 ||
+    e.target.closest('.side-control') ||
+    e.target.closest('#flash-toggle') ||
+    e.target.closest('#fisheye-toggle')
+  ) {
     return;
   }
   tapToFocus(e);
@@ -950,7 +1154,11 @@ async function showDiagnostics() {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cams = devices.filter((d) => d.kind === 'videoinput');
       lines.push('', `cameras (${cams.length}):`);
-      for (const c of cams) lines.push(`  ${c.label || '(hidden label)'}`);
+      for (const c of cams) {
+        const mark = torchCamId && c.deviceId === torchCamId ? '  ← saved torch lens' : '';
+        lines.push(`  ${c.label || '(hidden label)'}${mark}`);
+      }
+      lines.push(`torch lens saved: ${torchCamId ? 'yes' : 'no'}`);
     } catch {
       /* ignore */
     }

@@ -31,6 +31,24 @@ body {
   align-items: center;
   justify-content: center;
   background: #000;
+  touch-action: none; /* pinch belongs to the app, not the page */
+}
+
+#zoom-row {
+  display: flex;
+  justify-content: center;
+  padding: 2px 0;
+}
+
+#zoom-badge {
+  border: none;
+  border-radius: 999px;
+  padding: 5px 13px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #ffd54a;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 #video {
