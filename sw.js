@@ -1,6 +1,6 @@
 // Minimal service worker: precache the app shell so Retro Cam installs as a
 // PWA and opens offline. Bump VERSION when files change.
-const VERSION = 'retrocam-v17';
+const VERSION = 'retrocam-v18';
 const ASSETS = [
   './',
   './index.html',
@@ -37,6 +37,11 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  // This worker is registered at the site root, so it also sees requests for
+  // the training app in /athletic-cut/. Leave those to the network: caching
+  // them here, cache-first and never revalidated, would freeze that app at
+  // whatever version a phone first loaded.
+  if (new URL(e.request.url).pathname.includes('/athletic-cut/')) return;
   e.respondWith(
     caches.match(e.request).then(
       (hit) =>
