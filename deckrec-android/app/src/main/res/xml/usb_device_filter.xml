@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Most USB audio interfaces (including Pioneer DJ mixers) report device class 0
+      (per-interface class), so a class-based filter never matches them. We therefore
+      match on the vendor IDs the DJ hardware actually enumerates with, and rely on
+      runtime enumeration (UsbAudioScanner) for everything else.
+    -->
+    <!-- Pioneer DJ Corporation -->
+    <usb-device vendor-id="11123" />
+    <!-- Pioneer Corporation (older DJM/XDJ hardware) -->
+    <usb-device vendor-id="2276" />
+    <usb-device vendor-id="2278" />
+    <!-- AlphaTheta Corporation -->
+    <usb-device vendor-id="10682" />
+</resources>
