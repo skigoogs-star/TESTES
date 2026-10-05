@@ -314,6 +314,82 @@ export function fisheye(imageData, w, h, strength) {
 /* Filters                                                             */
 /* ------------------------------------------------------------------ */
 
+// Orange quartz-date-back stamp (the OldRoll signature), drawn as
+// seven-segment digits burned into the bottom-right of the frame.
+const SEG_BITS = {
+  0: 0b1111110,
+  1: 0b0110000,
+  2: 0b1101101,
+  3: 0b1111001,
+  4: 0b0110011,
+  5: 0b1011011,
+  6: 0b1011111,
+  7: 0b1110000,
+  8: 0b1111111,
+  9: 0b1111011,
+};
+// segment rects in digit units (cell is 4 wide × 7 tall, thickness 1):
+// order matches SEG_BITS: A top, B top-right, C bottom-right, D bottom,
+// E bottom-left, F top-left, G middle
+const SEG_RECTS = [
+  [0.5, 0, 3, 1],
+  [3, 0.5, 1, 3],
+  [3, 3.5, 1, 3],
+  [0.5, 6, 3, 1],
+  [0, 3.5, 1, 3],
+  [0, 0.5, 1, 3],
+  [0.5, 3, 3, 1],
+];
+
+export function dateStamp(imageData, w, h, text) {
+  const data = imageData.data;
+  const u = Math.max(2, Math.round(Math.min(w, h) / 150));
+  const margin = Math.round(Math.min(w, h) * 0.055);
+  const advance = 5.4 * u; // digit cell + gap
+  const blend = (px, py, alpha) => {
+    if (px < 0 || py < 0 || px >= w || py >= h) return;
+    const i = (py * w + px) * 4;
+    data[i] += (255 - data[i]) * alpha;
+    data[i + 1] += (150 - data[i + 1]) * alpha;
+    data[i + 2] += (40 - data[i + 2]) * alpha;
+  };
+  const rect = (x0, y0, rw, rh) => {
+    const x1 = Math.round(x0 + rw);
+    const y1 = Math.round(y0 + rh);
+    for (let y = Math.round(y0); y < y1; y++)
+      for (let x = Math.round(x0); x < x1; x++) {
+        blend(x, y, 0.88);
+        // soft burn halo, like the stamp bleeding into the emulsion
+        blend(x - 1, y, 0.1);
+        blend(x + 1, y, 0.1);
+        blend(x, y - 1, 0.1);
+        blend(x, y + 1, 0.1);
+      }
+  };
+  let x = w - margin - text.length * advance;
+  const y = h - margin - 7 * u;
+  for (const ch of text) {
+    if (ch in SEG_BITS) {
+      const bits = SEG_BITS[ch];
+      for (let s = 0; s < 7; s++) {
+        if (bits & (0b1000000 >> s)) {
+          const [rx, ry, rw, rh] = SEG_RECTS[s];
+          rect(x + rx * u, y + ry * u, rw * u, rh * u);
+        }
+      }
+    } else if (ch === "'") {
+      rect(x + 1.5 * u, y, u, 2 * u);
+    } // space: just advance
+    x += advance;
+  }
+}
+
+function todayStampText() {
+  const d = new Date();
+  const two = (n) => String(n).padStart(2, '0');
+  return `${two(d.getDate())} ${two(d.getMonth() + 1)} '${two(d.getFullYear() % 100)}`;
+}
+
 registerFilter({
   id: 'normal',
   name: 'Normal',
@@ -383,6 +459,23 @@ registerFilter({
     splitTone(data, [10, 3, -8], [30, 12, -16]); // warm shadows, golden highlights
     applyLUT(data, makeCurveLUT({ black: 14, white: 247, contrast: 0.32 }));
     vignette(data, w, h, 0.16, 0.85);
+  },
+});
+
+// Classic M — OldRoll's Leica M6 camera: muted "classic film tones" with a
+// slight desaturation, deep Leica blacks, cool shadows against gently warm
+// highlights, fine grain, and the orange quartz date stamp in the corner.
+registerFilter({
+  id: 'classic-m',
+  name: 'Classic M',
+  apply(imageData, w, h, { preview = false } = {}) {
+    const data = imageData.data;
+    desaturate(data, 0.25);
+    splitTone(data, [-5, 0, 6], [10, 5, -4]);
+    applyLUT(data, makeCurveLUT({ black: 18, white: 250, contrast: 0.35 }));
+    vignette(data, w, h, 0.28, 0.8);
+    grain(data, w, h, preview ? 7 : 10);
+    dateStamp(imageData, w, h, todayStampText());
   },
 });
 

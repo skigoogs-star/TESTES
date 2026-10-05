@@ -17,6 +17,7 @@ like a real app.
 | **Super 70s** | Warm faded 70s color film |
 | **Polaroid '89** | Washed-out instant-photo look |
 | **Golden Hour** | Punchy sunset light — glowing warm skin, saturated colors |
+| **Classic M** | Leica M6 film look (à la OldRoll) — muted tones, deep blacks, quartz date stamp |
 | **VHS '95** | Camcorder tape — fringing, scanlines, noise |
 
 ## Camera controls
