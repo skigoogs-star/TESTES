@@ -385,10 +385,12 @@ export function dateStamp(imageData, w, h, text) {
 }
 
 function todayStampText() {
+  // kept with dateStamp as a building block for date-stamped filters
   const d = new Date();
   const two = (n) => String(n).padStart(2, '0');
   return `${two(d.getDate())} ${two(d.getMonth() + 1)} '${two(d.getFullYear() % 100)}`;
 }
+export { todayStampText };
 
 registerFilter({
   id: 'normal',
@@ -462,20 +464,20 @@ registerFilter({
   },
 });
 
-// Classic M — OldRoll's Leica M6 camera: muted "classic film tones" with a
-// slight desaturation, deep Leica blacks, cool shadows against gently warm
-// highlights, fine grain, and the orange quartz date stamp in the corner.
+// Classic M — OldRoll's Leica M6 camera: soft, mellow "classic film tones" —
+// slightly desaturated and warm, gentle contrast with softly lifted shadows,
+// fine grain and a quiet vignette. Timeless rangefinder look, no gimmicks.
 registerFilter({
   id: 'classic-m',
   name: 'Classic M',
   apply(imageData, w, h, { preview = false } = {}) {
     const data = imageData.data;
-    desaturate(data, 0.25);
-    splitTone(data, [-5, 0, 6], [10, 5, -4]);
-    applyLUT(data, makeCurveLUT({ black: 18, white: 250, contrast: 0.35 }));
-    vignette(data, w, h, 0.28, 0.8);
+    desaturate(data, 0.22);
+    colorCast(data, 1.06, 1.0, 0.92); // mellow warmth
+    splitTone(data, [2, 1, 2], [8, 5, -2]); // gently warm highlights
+    applyLUT(data, makeCurveLUT({ black: 8, white: 250, contrast: 0.15, lift: 8 }));
+    vignette(data, w, h, 0.2, 0.85);
     grain(data, w, h, preview ? 7 : 10);
-    dateStamp(imageData, w, h, todayStampText());
   },
 });
 
