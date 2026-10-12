@@ -1360,6 +1360,189 @@ console.log('\nT16  weekly Markdown report');
   await ctx.close();
 }
 
+
+/* ---------------------------------------------------------------- V2-01 */
+console.log('\nV2-01  a real v1 backup survives v2 with nothing lost');
+{
+  /* fixtures/v1-backup.json and v1-localstorage.json were made by the v1 app itself (main, 2026-10-12):
+     three Day A sessions, an abandoned Day B, 21 days of weight, waist, nutrition, an Evolt scan, changed settings. */
+  const backupText = fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'v1-backup.json'), 'utf8');
+  const rawBlob = fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'v1-localstorage.json'), 'utf8');
+  const v1 = JSON.parse(backupText).state;
+  const KEYS = ['sessions', 'metrics', 'nutrition', 'scans', 'settings', 'flags', 'schedule'];
+  /* a) imported from the backup file */
+  {
+    const { ctx, page } = await newPage();
+    await page.goto(BASE);
+    const res = await page.evaluate(t => AC.store.importJSON(t), backupText);
+    ok('the v1 backup imports', res && res.ok !== false, JSON.stringify(res).slice(0, 120));
+    const st = await state(page);
+    KEYS.forEach(k => eq('import keeps every ' + k, st[k], v1[k]));
+    eq('custom and seeded exercises are kept', Object.keys(st.exercises).sort(), Object.keys(v1.exercises).sort());
+    await ctx.close();
+  }
+  /* b) the v1 blob already sitting in localStorage when v2 first opens */
+  {
+    const { ctx, page } = await newPage();
+    await page.addInitScript(raw => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('athletic-cut:v1', raw); sessionStorage.setItem('seeded', '1'); } }, rawBlob);
+    await page.goto(BASE);
+    await page.waitForSelector('.weekstrip');
+    const st = await state(page);
+    const raw = JSON.parse(rawBlob);
+    KEYS.forEach(k => eq('opening v2 on v1 data keeps every ' + k, st[k], raw[k]));
+    eq('the schema version is unchanged', st.schemaVersion, raw.schemaVersion);
+    ok('home shows the stored history (3 sessions logged)', st.sessions.filter(s => s.status === 'complete').length === 3);
+    await ctx.close();
+  }
+}
+
+/* ---------------------------------------------------------------- V2-02 */
+console.log('\nV2-02  onboarding explains the program from its own data');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  const t = await page.evaluate(() => document.body.innerText);
+  ok('it states the weeks from the program data', /12 weeks \(the plan allows up to 14\)/.test(t), t.slice(0, 200));
+  ok('it lists the four required days and the optional one', /Day A\s+Lower Power \+ Hinge/.test(t) && /Day D\s+Squat \+ Press \+ Kettlebell/.test(t) && /Day E/.test(t));
+  ok('it has a how-a-session-works card', /How a session works/.test(t) && /Log set/.test(t));
+  ok('Begin week 1 is still the way in', await page.getByRole('button', { name: /Begin week 1/i }).count() === 1);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-03 */
+console.log('\nV2-03  home: today\'s session, week strip, resume state');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const home = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll('.pv-row')].map(r => r.innerText.replace(/\s+/g, ' ')),
+    strip: [...document.querySelectorAll('.wk')].map(w => w.getAttribute('aria-label')),
+    quick: [...document.querySelectorAll('.quick button')].map(b => b.innerText.trim()),
+    tiles: [...document.querySelectorAll('.tile')].map(t => t.getBoundingClientRect().height)
+  }));
+  eq('the preview lists Day A\'s five blocks', home.rows.length, 5);
+  ok('with the main lift and its sets', /Trap bar deadlift 4 × 5 reps @ RPE 8/.test(home.rows[1]), home.rows[1]);
+  ok('and the finisher', /EMOM 8 min/.test(home.rows[3]), home.rows[3]);
+  eq('the week strip shows A–D and the optional day', home.strip, ['Day A, today', 'Day B, next', 'Day C', 'Day D', 'Optional day']);
+  eq('Weight, Nutrition, History are real buttons', home.quick, ['Weight', 'Nutrition', 'History']);
+  ok('stat tiles are at least 96 px tall', home.tiles.every(h => h >= 96), JSON.stringify(home.tiles));
+  /* log one main-lift set, go home: the resume card says where you are */
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.engine.logSet(); AC.engine.endRest(); AC.router.go('home'); });
+  await page.waitForSelector('.resume');
+  const resume = await page.locator('.resume').innerText();
+  ok('resume card reads "Resume session · Set 2 of 4"', /Resume session/.test(resume) && /Set 2 of 4/.test(resume), resume.replace(/\s+/g, ' '));
+  await page.evaluate(() => { AC.engine.complete({ sessionRPE: 8 }); AC.router.go('home'); });
+  await page.waitForSelector('.weekstrip');
+  const strip2 = await page.evaluate(() => [...document.querySelectorAll('.wk')].map(w => w.getAttribute('aria-label')));
+  eq('after Day A the strip moves on', strip2.slice(0, 3), ['Day A, done', 'Day B, today', 'Day C, next']);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-04 */
+console.log('\nV2-04  session loop: labelled phases, saved → rest → next set');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await tap(page, /Start session/i);
+  const phases = await page.evaluate(() => [...document.querySelectorAll('.phasebar .ph')].map(p => p.innerText.trim()));
+  eq('the phase bar is labelled', phases, ['Prep', 'Lift', 'Superset', 'Finish', 'Mobility']);
+  const checks = page.locator('button.check');
+  for (let i = 0; i < await checks.count(); i++) await checks.nth(i).click();
+  await tap(page, /^Continue/i);
+  const cur = await page.evaluate(() => ({ cur: document.querySelector('.ph.is-current').innerText.trim(), done: [...document.querySelectorAll('.ph.is-done')].map(p => p.innerText.trim()), target: document.querySelector('.ex-target').innerText }));
+  eq('Lift is current and Prep is done', [cur.cur, cur.done], ['Lift', ['Prep']]);
+  ok('the set count is shown on its own line', /^Set 1 of 4/.test(cur.target), cur.target);
+  await page.getByRole('button', { name: /^Log set/i }).click();
+  await page.waitForSelector('.restpanel');
+  const rest = await page.locator('.restpanel').innerText();
+  ok('rest says "Set 1 saved"', /Set 1 saved/.test(rest), rest.slice(0, 120));
+  ok('then REST', /Rest/.test(rest));
+  ok('then the next set right under the timer', /Next · Set 2 of 4/.test(rest), rest.replace(/\s+/g, ' ').slice(0, 200));
+  await skipRest();
+  const list = await page.evaluate(() => ({ head: !!document.querySelector('.setlist-h'), rows: [...document.querySelectorAll('.setlist .setrow')].map(r => r.innerText.replace(/\s+/g, ' ')) }));
+  ok('a compact completed-set list follows', list.head && list.rows.length === 1 && /Set 1/.test(list.rows[0]), JSON.stringify(list));
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-05 */
+console.log('\nV2-05  session menu: pause, finish early, discard');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.engine.setDraft('load', 225); AC.engine.logSet(); AC.engine.endRest(); AC.screens.render(); });
+  await page.getByRole('button', { name: /Leave session/i }).click();
+  const btns = await page.evaluate(() => [...document.querySelectorAll('.sheet .btn')].map(b => b.textContent.trim()));
+  eq('the menu offers the four choices', btns, ['Pause and leave', 'Finish early', 'Discard session', 'Cancel']);
+  await tap(page, /^Finish early/);
+  await page.waitForSelector('.finish-top');
+  const fin = await page.evaluate(() => ({ text: document.body.innerText, st: AC.store.get() }));
+  ok('finish early opens the summary', /Session saved/.test(fin.text));
+  const last = fin.st.sessions[fin.st.sessions.length - 1];
+  ok('it saves the work done', last.status === 'complete' && last.finishedEarly === true && last.entries.length === 1);
+  eq('and counts the day as done', fin.st.schedule.nextRequiredIndex, 1);
+  ok('it shows sets done against planned', /1\s*\/18/.test(fin.text.replace(/\n/g, ' ')) || /1\/18/.test(fin.text), fin.text.slice(0, 300));
+  await tap(page, /^Done$/i);
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.engine.logSet(); AC.engine.endRest(); AC.screens.render(); });
+  await page.getByRole('button', { name: /Leave session/i }).click();
+  await tap(page, /^Discard session/);
+  const conf = await page.evaluate(() => document.querySelector('.sheet') && document.querySelector('.sheet').innerText);
+  ok('discard asks first', /Discard this session\?/.test(conf || ''), conf);
+  await page.getByRole('button', { name: /^Discard$/ }).click();
+  const st = await state(page);
+  ok('discarded sets stay in history, marked abandoned', st.sessions[st.sessions.length - 1].status === 'abandoned' && !st.activeSession);
+  eq('and the day is not counted', st.schedule.nextRequiredIndex, 1);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-06 */
+console.log('\nV2-06  records: load, rep and e1RM are detected separately');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const r = await page.evaluate(() => {
+    const U = AC.util, d = U.addDays(U.todayKey(), -7);
+    const E = (load, reps, i) => ({ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: i, load, loadUnit: 'lb', reps, rpe: 8, isWarmup: false, seconds: null, distanceM: null, completedAt: d + 'T10:00:00.000Z' });
+    AC.store.update(s => s.sessions.push({ id: 'p1', dayId: 'day-a', startedAt: d + 'T10:00:00.000Z', completedAt: d + 'T10:40:00.000Z', status: 'complete', entries: [E(245, 5, 0), E(245, 5, 1)], bodyweightAtTime: 199, totals: {}, beatLast: [] }));
+    const kinds = (entries) => AC.stats.prsFor({ id: 'x', entries, bodyweightAtTime: 199 }).map(p => p.kind).sort();
+    return {
+      heavier: kinds([E(255, 5, 0)]),
+      moreReps: kinds([E(245, 7, 0)]),
+      same: kinds([E(245, 5, 0)]),
+      lighterMoreReps: kinds([E(235, 6, 0)]),
+      lighterSameReps: kinds([E(235, 5, 0)]),
+      warmupOnly: AC.stats.prsFor({ id: 'y', entries: [Object.assign(E(300, 5, 0), { isWarmup: true })], bodyweightAtTime: 199 }).length,
+      firstTime: AC.stats.prsFor({ id: 'z', entries: [{ exerciseId: 'front-squat', load: 135, loadUnit: 'lb', reps: 6, isWarmup: false }], bodyweightAtTime: 199 }).length
+    };
+  });
+  eq('heavier at the same reps: load + e1RM records', r.heavier, ['e1rm', 'load']);
+  eq('more reps at the same load: rep + e1RM records', r.moreReps, ['e1rm', 'reps']);
+  eq('matching last time is not a record', r.same, []);
+  eq('6 reps at a load never done for more than 5 is a rep record, but not an e1RM one', r.lighterMoreReps, ['reps']);
+  eq('a lighter load at the same reps is no record', r.lighterSameReps, []);
+  eq('warm-ups never set records', r.warmupOnly, 0);
+  eq('a first-ever exercise is a baseline, not a record', r.firstTime, 0);
+  /* and the finish screen shows them */
+  await page.evaluate(() => {
+    AC.engine.start('day-a'); AC.engine.nextBlock();
+    AC.engine.setDraft('load', 255); AC.engine.setDraft('reps', 5); AC.engine.logSet(); AC.engine.endRest();
+    AC.engine.complete({ sessionRPE: 8 }); AC.router.go('summary');
+  });
+  await page.waitForSelector('.prcard');
+  const cards = await page.evaluate(() => [...document.querySelectorAll('.prcard .prtag')].map(t => t.textContent));
+  eq('the finish screen shows a green card per record', cards, ['LOAD PR', 'e1RM PR']);
+  const saved = await state(page);
+  eq('records are stored on the session log', saved.sessions[saved.sessions.length - 1].prs.map(p => p.kind), ['load', 'e1rm']);
+  ok('the next session is the real next day', /Day B · Upper Strength/.test(await page.evaluate(() => document.body.innerText)));
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 console.log('\n' + (fail ? '\x1b[31m' : '\x1b[32m') + pass + ' passed, ' + fail + ' failed\x1b[0m');
