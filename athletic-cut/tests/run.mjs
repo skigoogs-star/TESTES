@@ -1377,7 +1377,8 @@ console.log('\nV2-01  a real v1 backup survives v2 with nothing lost');
     const res = await page.evaluate(t => AC.store.importJSON(t), backupText);
     ok('the v1 backup imports', res && res.ok !== false, JSON.stringify(res).slice(0, 120));
     const st = await state(page);
-    KEYS.forEach(k => eq('import keeps every ' + k, st[k], v1[k]));
+    KEYS.filter(k => k !== 'settings').forEach(k => eq('import keeps every ' + k, st[k], v1[k]));
+    eq('import keeps every v1 setting value (v2 only adds new ones)', Object.keys(v1.settings).map(k => st.settings[k]), Object.keys(v1.settings).map(k => v1.settings[k]));
     eq('custom and seeded exercises are kept', Object.keys(st.exercises).sort(), Object.keys(v1.exercises).sort());
     await ctx.close();
   }
@@ -1389,7 +1390,9 @@ console.log('\nV2-01  a real v1 backup survives v2 with nothing lost');
     await page.waitForSelector('.weekstrip');
     const st = await state(page);
     const raw = JSON.parse(rawBlob);
-    KEYS.forEach(k => eq('opening v2 on v1 data keeps every ' + k, st[k], raw[k]));
+    KEYS.filter(k => k !== 'settings').forEach(k => eq('opening v2 on v1 data keeps every ' + k, st[k], raw[k]));
+    eq('and every v1 setting value', Object.keys(raw.settings).map(k => st.settings[k]), Object.keys(raw.settings).map(k => raw.settings[k]));
+    ok('new v2 settings arrive with defaults', st.settings.barWeightLb === 45 && Array.isArray(st.settings.platesLb) && Array.isArray(st.settings.favorites));
     eq('the schema version is unchanged', st.schemaVersion, raw.schemaVersion);
     ok('home shows the stored history (3 sessions logged)', st.sessions.filter(s => s.status === 'complete').length === 3);
     await ctx.close();
@@ -1481,7 +1484,7 @@ console.log('\nV2-05  session menu: pause, finish early, discard');
   await tap(page, /^Finish early/);
   await page.waitForSelector('.finish-top');
   const fin = await page.evaluate(() => ({ text: document.body.innerText, st: AC.store.get() }));
-  ok('finish early opens the summary', /Session saved/.test(fin.text));
+  ok('finish early says the session ended, with sets done', /Session ended/.test(fin.text) && /1 of 18 sets/.test(fin.text));
   const last = fin.st.sessions[fin.st.sessions.length - 1];
   ok('it saves the work done', last.status === 'complete' && last.finishedEarly === true && last.entries.length === 1);
   eq('and counts the day as done', fin.st.schedule.nextRequiredIndex, 1);
@@ -1535,11 +1538,156 @@ console.log('\nV2-06  records: load, rep and e1RM are detected separately');
     AC.engine.complete({ sessionRPE: 8 }); AC.router.go('summary');
   });
   await page.waitForSelector('.prcard');
-  const cards = await page.evaluate(() => [...document.querySelectorAll('.prcard .prtag')].map(t => t.textContent));
-  eq('the finish screen shows a green card per record', cards, ['LOAD PR', 'e1RM PR']);
+  const cards = await page.evaluate(() => ({ hero: [...document.querySelectorAll('.prcard .prtag')].map(t => t.textContent), rows: [...document.querySelectorAll('.prrow .prtag')].map(t => t.textContent), beat: /Beat last time/.test(document.body.innerText) }));
+  eq('the strongest record (e1RM) is the big green card', cards.hero, ['e1RM PR']);
+  eq('other records are compact rows', cards.rows, ['LOAD PR']);
+  ok('and "Beat last time" is not repeated next to them', !cards.beat);
   const saved = await state(page);
   eq('records are stored on the session log', saved.sessions[saved.sessions.length - 1].prs.map(p => p.kind), ['load', 'e1rm']);
   ok('the next session is the real next day', /Day B · Upper Strength/.test(await page.evaluate(() => document.body.innerText)));
+  await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- V2-07 */
+console.log('\nV2-07  plate calculator and warm-up ramp');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const m = await page.evaluate(() => ({
+    trap250: AC.stats.platesFor(250, 'lb', 'trap-bar-deadlift'),
+    bar135: AC.stats.platesFor(135, 'lb', 'front-squat'),
+    bar45: AC.stats.plateText(45, 'lb', 'front-squat'),
+    under: AC.stats.plateText(30, 'lb', 'front-squat'),
+    kg100: AC.stats.platesFor(100, 'kg', 'front-squat'),
+    odd: AC.stats.platesFor(137, 'lb', 'front-squat'),
+    ramp: AC.stats.warmupsFor(250, 'lb', 'trap-bar-deadlift')
+  }));
+  eq('250 on a 45 lb trap bar is 45+45+10+2.5 a side', m.trap250.perSide, [45, 45, 10, 2.5]);
+  eq('135 on a 45 lb bar is one 45 a side', m.bar135.perSide, [45]);
+  ok('the empty bar says so', /Just the 45 lb bar/.test(m.bar45), m.bar45);
+  ok('a load under the bar says so', /Below the 45 lb bar/.test(m.under), m.under);
+  eq('100 kg on a 20 kg bar is 25+15 a side with the default kg plates', m.kg100.perSide, [25, 15]);
+  ok('a load the plates cannot make reports the shortfall', !m.odd.exact && m.odd.short === 2, JSON.stringify(m.odd));
+  eq('the warm-up ramp is 40/60/80 % rounded to 5 lb', m.ramp, [{ load: 100, reps: 5 }, { load: 150, reps: 3 }, { load: 200, reps: 2 }]);
+  /* settings change the maths */
+  await page.evaluate(() => AC.store.update(s => { s.settings.trapBarWeightLb = 60; s.settings.platesLb = [45, 25, 10, 5]; }));
+  const after = await page.evaluate(() => AC.stats.platesFor(250, 'lb', 'trap-bar-deadlift'));
+  eq('a 60 lb trap bar and no 2.5s change the answer', [after.perSide, after.short], [[45, 45, 5], 0]);
+  /* on the lift screen */
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.store.update(s => { s.settings.trapBarWeightLb = 45; s.settings.platesLb = [45, 35, 25, 10, 5, 2.5]; }); AC.engine.nextBlock(); AC.engine.setDraft('load', 225); AC.screens.render(); });
+  const plates = await page.locator('.plates').first().innerText();
+  ok('the load stepper shows the plates per side', /Per side: 45 \+ 45 · 45 lb trap bar/.test(plates), plates);
+  await page.locator('.stepper').first().locator('.step-btn').last().click();
+  ok('and updates as the load changes', /Per side: 45 \+ 45 \+ 2\.5/.test(await page.locator('.plates').first().innerText()));
+  await page.getByRole('button', { name: /Warm-up/ }).first().click();
+  await page.getByRole('button', { name: /^Log warm-up 90 lb for 5/ }).click();
+  const st = await state(page);
+  const wu = st.activeSession.entries.filter(e => e.isWarmup);
+  ok('a warm-up row logs that load as a warm-up', wu.length === 1 && wu[0].load === 90 && wu[0].reps === 5, JSON.stringify(wu));
+  eq('it never counts as a working set', st.activeSession.block.setIndex, 0);
+  ok('and no rest timer starts', !st.activeSession.timer);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-08 */
+console.log('\nV2-08  lift history, editable past sets, weekly ring, More');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await page.evaluate(() => {
+    const U = AC.util;
+    [21, 14, 7].forEach((d, i) => {
+      const date = U.addDays(U.todayKey(), -d);
+      AC.store.update(s => s.sessions.push({ id: 'h' + i, dayId: 'day-a', startedAt: date + 'T10:00:00.000Z', completedAt: date + 'T10:40:00.000Z', status: 'complete', bodyweightAtTime: 199, notes: '',
+        totals: { volumeLb: 0, setsLogged: 2, durationSec: 2400 }, beatLast: [],
+        entries: [0, 1].map(k => ({ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: k, load: 235 + i * 10, loadUnit: 'lb', reps: 5, rpe: 8, isWarmup: false, seconds: null, distanceM: null, completedAt: date + 'T10:10:00.000Z' })) }));
+    });
+  });
+  const hh = await page.evaluate(() => AC.stats.liftHistory('trap-bar-deadlift'));
+  eq('history keeps the last three sessions, newest first', hh.last.map(r => r.best.load), [255, 245, 235]);
+  eq('with the best set', hh.best.best.load, 255);
+  eq('and a trend per session', hh.trend.length, 3);
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.screens.render(); });
+  const row = await page.locator('.histrow').innerText();
+  ok('the lift screen shows the history line', /Best 255×5/.test(row) && /last 255×5, 245×5, 235×5/.test(row), row.replace(/\s+/g, ' '));
+  await page.locator('.histrow').click();
+  await page.waitForSelector('.sheet');
+  ok('tapping it opens the last sessions', /history/.test(await page.locator('.sheet-title').innerText()));
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { AC.engine.abandon(); AC.router.go('history'); });
+  /* edit a past set */
+  await page.waitForSelector('.listrow');
+  await page.evaluate(() => { const rows = [...document.querySelectorAll('.listrow')]; rows.find(r => /Day A/.test(r.textContent) && /2 sets/.test(r.textContent)).click(); });
+  await page.waitForSelector('.editrow');
+  await page.locator('.editrow').first().click();
+  await page.waitForSelector('.sheet .stepper');
+  await page.locator('.sheet .stepper').last().locator('.step-btn').last().click();
+  await page.getByRole('button', { name: /^Save$/ }).click();
+  const edited = await state(page);
+  const changed = edited.sessions.find(s => s.id === 'h2').entries[0];
+  ok('a past set can be edited', changed.reps === 6 && !!changed.editedAt, JSON.stringify(changed));
+  ok('and the session volume follows', edited.sessions.find(s => s.id === 'h2').totals.volumeLb === 255 * 6 + 255 * 5);
+  await page.locator('.sheet textarea').fill('Grip slipped on set 2');
+  const note = (await state(page)).sessions.find(s => s.id === 'h2').notes;
+  eq('notes on a past session are editable', note, 'Grip slipped on set 2');
+  /* weekly ring + More */
+  await page.evaluate(() => AC.router.go('home'));
+  await page.waitForSelector('.tile--ring');
+  ok('home shows a weekly ring with sessions this week', /of 4 sessions this week/.test(await page.locator('.tile--ring').getAttribute('aria-label')));
+  await page.evaluate(() => AC.router.go('more'));
+  await page.waitForSelector('.grouptitle');
+  eq('More is grouped', await page.evaluate(() => [...document.querySelectorAll('.grouptitle')].map(g => g.textContent)), ['Workout', 'Appearance', 'Data']);
+  ok('the report is called Export weekly report', await page.getByRole('button', { name: /^Export weekly report/ }).count() === 1);
+  await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- V2-09 */
+console.log('\nV2-09  library views, favorites, demo controls, progress headline');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await page.evaluate(() => AC.router.go('library'));
+  await page.waitForSelector('.listrow');
+  const lib = await page.evaluate(() => ({ rows: document.querySelectorAll('.listrow').length, count: document.querySelector('.meta[aria-live]').textContent, rowsOfChips: document.querySelectorAll('.chips').length }));
+  ok('the library shows a result count', /^\d+ exercises$/.test(lib.count) && +lib.count.split(' ')[0] === lib.rows, lib.count);
+  eq('with one filter row', lib.rowsOfChips, 1);
+  await page.getByRole('radio', { name: /Favorites/ }).click();
+  ok('favorites start empty and say how to add one', /tap the star/.test(await page.locator('.scroll').last().innerText()));
+  await page.evaluate(() => AC.router.go('exercise/trap-bar-deadlift'));
+  await page.getByRole('button', { name: /Add to favorites/ }).click();
+  eq('the star saves a favorite', (await state(page)).settings.favorites, ['trap-bar-deadlift']);
+  const ctl = await page.evaluate(() => [...document.querySelectorAll('.figctl button')].map(b => b.textContent + ':' + b.getAttribute('aria-pressed')));
+  eq('the demo has explicit Start / Finish / Play controls', ctl.map(x => x.split(':')[0]), ['Start', 'Finish', 'Play']);
+  await page.getByRole('button', { name: /^Finish$/ }).click();
+  ok('Finish shows the end position', await page.evaluate(() => document.querySelector('.figbox .fig').classList.contains('frame1')));
+  await page.evaluate(() => AC.router.go('library'));
+  await page.waitForSelector('.listrow');
+  await page.getByRole('radio', { name: /Favorites/ }).click();
+  const favRows = await page.evaluate(() => [...document.querySelectorAll('.listrow-title')].map(t => t.textContent));
+  eq('the favorites view lists it', favRows, ['★ Trap bar deadlift']);
+  await page.getByRole('radio', { name: /^All$/ }).click();
+  /* progress headline from data only */
+  await page.evaluate(() => {
+    const U = AC.util;
+    AC.store.update(s => {
+      for (let i = 20; i >= 0; i--) s.metrics.push({ id: 'w' + i, date: U.addDays(U.todayKey(), -i), type: 'weight', value: 200 - (20 - i) * 0.1, unit: 'lb', source: 'manual' });
+      [14, 0].forEach((d, i) => s.metrics.push({ id: 'wa' + i, date: U.addDays(U.todayKey(), -d), type: 'waist', value: 32.3 - i * 0.9, unit: 'in', source: 'manual' }));
+      [14, 0].forEach((d, i) => { const date = U.addDays(U.todayKey(), -d); s.sessions.push({ id: 'pp' + i, dayId: 'day-a', startedAt: date + 'T10:00:00.000Z', completedAt: date + 'T10:40:00.000Z', status: 'complete', bodyweightAtTime: 199, totals: {}, beatLast: [],
+        entries: [{ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: 0, load: 245 + i * 15, loadUnit: 'lb', reps: 5, rpe: 8, isWarmup: false, completedAt: date + 'T10:10:00.000Z' }] }); });
+    });
+    AC.router.go('progress');
+  });
+  await page.waitForSelector('.takeaway');
+  const t = await page.locator('.takeaway').innerText();
+  ok('progress leads with a takeaway headline', /Waist −0\.9 in/.test(t) && /weight −1\.\d lb/.test(t) && /Trap bar deadlift e1RM \+18 lb/.test(t), t);
+  ok('the range controls are sticky', await page.evaluate(() => getComputedStyle(document.querySelector('.sticky-range')).position === 'sticky'));
   await ctx.close();
 }
 
