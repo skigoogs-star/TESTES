@@ -92,7 +92,7 @@ thing as JSON from **More**.
 ## Tests
 
 ```
-node tests/run.mjs      # 352 checks, headless Chromium
+node tests/run.mjs      # 356 checks, headless Chromium
 node tests/shots.mjs    # screenshots of every screen into tests/shots/
 ```
 

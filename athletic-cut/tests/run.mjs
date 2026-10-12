@@ -1691,6 +1691,27 @@ console.log('\nV2-09  library views, favorites, demo controls, progress headline
   await ctx.close();
 }
 
+
+/* ---------------------------------------------------------------- V2-10 */
+console.log('\nV2-10  long stepper values fit (Body: fasted weight 199.7)');
+{
+  for (const scheme of ['dark', 'light']) {
+    const { ctx, page } = await newPage({ colorScheme: scheme });
+    await page.goto(BASE);
+    await tap(page, /Begin week 1/i);
+    await page.evaluate(() => AC.router.go('body'));
+    await page.waitForSelector('.stepper .step-val');
+    const fit = await page.evaluate(() => [...document.querySelectorAll('.stepper .step-val')].filter(v => v.offsetParent).map(v => {
+      const span = v.querySelector('span') || v; const r = document.createRange(); r.selectNodeContents(span);
+      const t = r.getBoundingClientRect(), c = v.getBoundingClientRect();
+      return { text: v.innerText.trim().split('\n')[0], fits: t.left >= c.left - 0.5 && t.right <= c.right + 0.5 };
+    }));
+    ok('every stepper number fits its cell in ' + scheme + ' (' + fit.map(f => f.text).join(', ') + ')', fit.length > 0 && fit.every(f => f.fits), JSON.stringify(fit));
+    ok('the fasted weight reads 199.7 in full in ' + scheme, fit.some(f => f.text === '199.7' && f.fits), JSON.stringify(fit));
+    await ctx.close();
+  }
+}
+
 await browser.close();
 server.close();
 console.log('\n' + (fail ? '\x1b[31m' : '\x1b[32m') + pass + ' passed, ' + fail + ' failed\x1b[0m');

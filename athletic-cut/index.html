@@ -705,6 +705,10 @@ svg{display:block}
 .cuewrap{display:flex;align-items:flex-start;gap:var(--s-2)}
 .cuewrap .cuestrip{flex:1;font-size:var(--fs-body);color:var(--text)}
 .morecues{min-height:var(--tap-min);padding:0 var(--s-2);color:var(--primary-text);font-size:var(--fs-label);font-weight:600;flex:none}
+.stepper .step-val.is-long{font-size:min(var(--fs-num-xl),16cqw)}
+.stepper--sm .step-val.is-long{font-size:min(var(--fs-num-lg),15cqw)}
+.stepper .step-val.is-xlong{font-size:min(var(--fs-num-xl),13cqw)}
+.stepper--xs .step-val.is-long{font-size:min(var(--fs-num-md),12cqw)}
 /* Onboarding v2 */
 .ob-days{display:flex;flex-direction:column;gap:var(--s-1)}
 .ob-days li{display:flex;gap:var(--s-3);font-size:var(--fs-label);color:var(--text-2)}
@@ -2026,6 +2030,8 @@ AC.ui = (function () {
       'aria-haspopup': 'dialog', 'aria-label': (opts.label || 'Value') + ', ' + fmt(value) + ' ' + unit + '. Tap to type.' });
     var valText = h('span', { text: fmt(value) });
     valBtn.appendChild(valText);
+    if (fmt(value).length >= 5) valBtn.classList.add('is-long');
+    if (fmt(value).length >= 6) valBtn.classList.add('is-xlong');
     var live = h('span', { class: 'sr', 'aria-live': 'polite', 'aria-atomic': 'true' });
     valBtn.appendChild(live);
     box.appendChild(minus); box.appendChild(valBtn); box.appendChild(plus);
@@ -2043,6 +2049,10 @@ AC.ui = (function () {
       }
       value = v;
       valText.textContent = fmt(value);
+      /* v2: long values (199.7, 1,200) shrink to fit the middle cell instead of clipping */
+      var len = valText.textContent.length;
+      valBtn.classList.toggle('is-long', len >= 5);
+      valBtn.classList.toggle('is-xlong', len >= 6);
       valBtn.setAttribute('aria-label', (opts.label || 'Value') + ', ' + fmt(value) + ' ' + unit + '. Tap to type.');
       clearTimeout(liveT);
       liveT = setTimeout(function () { live.textContent = fmt(value) + ' ' + unit; }, 300);
