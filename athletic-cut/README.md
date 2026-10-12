@@ -50,6 +50,38 @@ no server, and no network traffic after the page loads.
   drawing, 3–5 coaching cues and the common mistakes. You can replace any figure
   with a clip of yourself, stored on-device in IndexedDB.
 
+## What's new in v2
+
+- **A calmer, clearer look.** Sentence-case labels, three surface levels with hairlines,
+  and strict colour jobs: gold is the action, cyan is rest, green is saved/done/record.
+- **Home shows the day.** Today's session as numbered steps (blocks, sets, finisher),
+  a week strip with A–D plus the optional day, bigger stat tiles with a weekly ring
+  ("4 sessions this week", no daily streaks), real Weight / Nutrition / History buttons,
+  and **Resume session · Set 2 of 4** when a session is open.
+- **The session tells you where you are.** A labelled phase bar (Prep · Lift · Superset ·
+  Finish · Mobility), the set count on its own line, one cue with **More cues**, load and
+  reps in one card, a quiet "Set 1 saved" check, then REST with the next set right under
+  the timer, and a compact list of completed sets.
+- **Plates per side.** Barbell loads show the plates for each side from your bar weight,
+  trap-bar weight and the plates you own (More → Workout → Plate calculator).
+- **Optional warm-up ramp** for the main barbell lifts (40/60/80 % of the working load);
+  tap a row to log it as a warm-up. It never counts as a working set and starts no timer.
+- **Lift history on the lift screen**: best set, the last three sessions and a small trend.
+- **A real finish.** Duration, sets done against planned, volume, the strongest record as
+  a big green card (load, rep and estimated-1RM records are detected separately), the
+  real next day, then Done. **Finish early** saves the work and says the session ended;
+  **Discard** asks first and keeps the sets in history as abandoned.
+- **History you can fix.** Edit any past set's load or reps and the session note; the
+  session's volume follows.
+- **Library**: one filter row with Favorites (★ on any exercise) and Recent, a result
+  count, and Start / Finish / Play controls on every demonstration.
+- **Progress** opens with one takeaway line for the range and keeps the range controls
+  in view. **More** is grouped into Workout, Appearance and Data, and the report is now
+  **Export weekly report**.
+- **Your data carries over.** v2 reads the same `athletic-cut:v1` key; new settings arrive
+  with defaults and nothing else changes. A test imports a backup made by v1 and opens v2
+  on a v1 phone's storage, and checks every session, metric, scan and setting survives.
+
 ## Data
 
 Everything lives in one versioned `localStorage` key (`athletic-cut:v1`) with a
@@ -60,7 +92,7 @@ thing as JSON from **More**.
 ## Tests
 
 ```
-node tests/run.mjs      # 261 checks, headless Chromium
+node tests/run.mjs      # 352 checks, headless Chromium
 node tests/shots.mjs    # screenshots of every screen into tests/shots/
 ```
 
