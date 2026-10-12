@@ -63,7 +63,10 @@ const hdr = () => P.locator('.runner-head .cap').first().innerText();
 console.log('\nT01  static audit — single file, no network, no non-goals');
 {
   const src = fs.readFileSync(FILE, 'utf8');
-  ok('file under 400 KB', Buffer.byteLength(src) < 400 * 1024, Math.round(Buffer.byteLength(src) / 1024) + ' KB');
+  // The app stays under 400 KB; the line drawings have their own 1.5 MB budget on top.
+  const code = src.replace(/AC\.drawings = \{[\s\S]*?\n\};\n/, '');
+  ok('app code under 400 KB (without the drawings)', Buffer.byteLength(code) < 400 * 1024, Math.round(Buffer.byteLength(code) / 1024) + ' KB');
+  ok('drawings add no more than 1.5 MB', Buffer.byteLength(src) - Buffer.byteLength(code) <= 1.5e6, Math.round((Buffer.byteLength(src) - Buffer.byteLength(code)) / 1024) + ' KB');
   ok('no <script src>', !/<script[^>]+src=/i.test(src));
   ok('no <link rel=stylesheet>', !/<link[^>]+stylesheet/i.test(src));
   ok('no @import', !/@import/.test(src));
@@ -907,14 +910,67 @@ console.log('\nT12  design invariants');
     return bad;
   });
   eq('every figure keeps its limb lengths across both frames', figs, []);
+
+  // Line drawings (the 38 exercises). The limb test above still guards the stick
+  // fallback used for custom exercises; it can't measure a traced image.
+  const drawn = await page.evaluate(() => {
+    const D = AC.drawings, ex = AC.store.get().exercises;
+    const HANG = ['pull-up', 'weighted-pull-up', 'dead-hang', 'hanging-leg-raise'];
+    const out = { missing: [], still: [], same: [], floor: [] };
+    for (const id in ex) {
+      if (ex[id].isCustom) continue;
+      const d = D[ex[id].mediaRef];
+      if (!d || !['a', 'b'].every(k => d[k] && d[k].i && d[k].i.length > 500 && d[k].t.length === 4)) { out.missing.push(id); continue; }
+      if (!['a', 'b'].includes(d.s)) out.still.push(id);
+      if (d.a.i === d.b.i) out.same.push(id);
+      // Both frames stand on the shared floor (y = 667.5), so the toggle doesn't jump.
+      if (!HANG.includes(id)) ['a', 'b'].forEach(k => {
+        const bottom = d[k].t[1] + d[k].t[3];
+        if (Math.abs(bottom - 667.5) > 2) out.floor.push(id + '.' + k + ' ' + bottom);
+      });
+    }
+    return out;
+  });
+  eq('every exercise has a start and a finish drawing', drawn.missing, []);
+  eq('every drawing names its still frame', drawn.still, []);
+  eq('start and finish are different drawings', drawn.same, []);
+  eq('every standing or lying drawing sits on the shared floor line in both frames', drawn.floor, []);
+  const ink = await page.evaluate(() => ['dark', 'light'].map(t => {
+    document.documentElement.setAttribute('data-theme', t);
+    const f = AC.svg.figure('goblet-squat'); document.body.appendChild(f);
+    const p = f.querySelector('.ink'), r = getComputedStyle(p).fill === getComputedStyle(f).color;
+    f.remove(); return r;
+  }));
+  eq('drawings take the text colour in dark and light', ink, [true, true]);
+  const fallback = await page.evaluate(() => {
+    const f = AC.svg.figure('generic-squat');
+    return !f.classList.contains('drawn') && !!f.querySelector('.body');
+  });
+  ok('custom exercises without a drawing fall back to the stick figure', fallback);
   const thumbFrame = await page.evaluate(() => {
     AC.store.update(s => { s.onboarded = true; });
     AC.router.go('library'); AC.screens.render();
-    const fig = document.querySelector('.listrow .fig');
-    return { f0: getComputedStyle(fig.querySelector('.f0')).opacity,
-             f1: getComputedStyle(fig.querySelector('.f1')).opacity };
+    return [...document.querySelectorAll('.listrow .fig')].map(fig => {
+      const still = fig.classList.contains('still-a') ? 'a' : 'b';
+      const shown = getComputedStyle(fig.querySelector('.f0')).opacity === '1' ? 'a' : 'b';
+      const hidden = getComputedStyle(fig.querySelector(still === 'a' ? '.f1' : '.f0')).opacity;
+      return fig.classList.contains('drawn') && still === shown && hidden === '0';
+    });
   });
-  eq('thumbnails show the end pose, which names the movement', [thumbFrame.f0, thumbFrame.f1], ['0', '1']);
+  ok('library thumbnails show each drawing\'s still frame, the one that names the movement', thumbFrame.length >= 38 && thumbFrame.every(Boolean), JSON.stringify(thumbFrame));
+  {
+    // Reduced motion: the demo holds the still frame instead of animating.
+    const rm = await newPage({ reducedMotion: 'reduce' });
+    await rm.page.goto(BASE);
+    const held = await rm.page.evaluate(() => ['kettlebell-swing', 'farmers-carry'].map(id => {
+      const f = AC.svg.figure(id); document.body.appendChild(f);
+      const r = [AC.drawings[id].s, getComputedStyle(f.querySelector('.f0')).opacity, getComputedStyle(f.querySelector('.f1')).opacity];
+      f.remove(); return r.join(' ');
+    }));
+    eq('reduced motion holds each drawing on its still frame', held, ['b 0 1', 'a 1 0']);
+    await rm.ctx.close();
+    P = page;
+  }
 
   // Contrast tokens that only bite in one theme combination.
   const tokens = await page.evaluate(() => {
@@ -1667,6 +1723,7 @@ console.log('\nV2-09  library views, favorites, demo controls, progress headline
   eq('the demo has explicit Start / Finish / Play controls', ctl.map(x => x.split(':')[0]), ['Start', 'Finish', 'Play']);
   await page.getByRole('button', { name: /^Finish$/ }).click();
   ok('Finish shows the end position', await page.evaluate(() => document.querySelector('.figbox .fig').classList.contains('frame1')));
+  ok('the lift screen demo is the line drawing', await page.evaluate(() => document.querySelector('.figbox .fig').classList.contains('drawn')));
   await page.evaluate(() => AC.router.go('library'));
   await page.waitForSelector('.listrow');
   await page.getByRole('radio', { name: /Favorites/ }).click();

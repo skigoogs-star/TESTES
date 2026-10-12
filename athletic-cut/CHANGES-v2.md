@@ -17,6 +17,7 @@ Your data is safe. v2 reads the same storage as v1, and a test proves it: a back
 9. **Go to More → History**, open a session and tap a set to correct it. You can also edit the note.
 10. **Go to Library.** Tap ★ on an exercise, then try the Favorites and Recent filters. Each demo has Start, Finish and Play buttons.
 11. **Go to Progress.** It opens with one line that sums up the range.
+12. **The exercise pictures are now line drawings** (all 38), in the library, the lift-screen thumbnails and the demo. Start and Finish share one floor line so the toggle doesn't jump. They follow light and dark mode. Custom exercises you add still get the stick figure.
 
 ## Not done in this round
 
