@@ -18,6 +18,10 @@ Your data is safe. v2 reads the same storage as v1, and a test proves it: a back
 10. **Go to Library.** Tap ★ on an exercise, then try the Favorites and Recent filters. Each demo has Start, Finish and Play buttons.
 11. **Go to Progress.** It opens with one line that sums up the range.
 12. **The exercise pictures are now line drawings** (all 38), in the library, the lift-screen thumbnails and the demo. Start and Finish share one floor line so the toggle doesn't jump. They follow light and dark mode. Custom exercises you add still get the stick figure.
+13. **More → Program → Start a phase.** Pick Phase 1 (Athletic Cut) or Phase 2 (Athletic Build), do the check-in (weight, waist, optional chest/arm/thigh/hips, front/side/back photos), confirm. Week 1 starts today. Every session, lift, record, metric, photo and setting stays.
+14. **Body → Start vs now** shows weight, waist and tape from the start of the phase to today. Tap an earlier run to see that one.
+15. **Day C: "Where are you training?"** Phase 1: Track, Spin bike, Rower or Sled push. Phase 2: Outdoors, Indoors · bike, Indoors · sled. The app remembers your choice.
+16. **Progress → Progress photos.** First vs latest, with a slider to wipe between them, and a timeline per view. Photos stay on the phone. They have their own backup file (More → Export photos backup); the data export leaves them out.
 
 ## Not done in this round
 
