@@ -472,6 +472,41 @@ svg{display:block}
 .pips i.slow{background:var(--danger)}
 .pips i.miss{background:var(--danger-dim);box-shadow:inset 0 0 0 1px var(--danger)}
 
+/* Phases, check-in, photos */
+.phasecard{text-align:left;display:flex;flex-direction:column;gap:6px;border:1px solid var(--border, transparent)}
+.phasecard.is-on{box-shadow:inset 0 0 0 2px var(--primary)}
+.phasecard-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.photoslots{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s-2)}
+.photoslot{position:relative;display:flex;flex-direction:column;gap:6px;cursor:pointer;min-height:var(--tap-min)}
+.photoslot img,.photoslot .sil{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:var(--r-2);background:var(--surface-2);display:block}
+.photoslot .sil{fill:var(--text-3);opacity:.5;padding:12%}
+.photoslot:focus-within{outline:2px solid var(--primary);outline-offset:2px;border-radius:var(--r-2)}
+.photoslot-cap{display:flex;flex-direction:column;font-size:var(--fs-label);color:var(--text-2);line-height:1.25}
+.photoslot-cap b{color:var(--text)}
+.chip--quiet{align-self:flex-start;gap:6px;color:var(--text-2)}
+.svn-rows{display:grid;gap:6px}
+.svn-row{display:grid;grid-template-columns:4.5em auto 1em 1fr auto;gap:6px;align-items:baseline}
+.svn-l{color:var(--text-2)}
+.svn-now{font-weight:700}
+.svn-arrow{color:var(--text-3)}
+.wipe{position:relative;width:100%;aspect-ratio:3/4;border-radius:var(--r-3);overflow:hidden;background:var(--surface-2);touch-action:none;user-select:none}
+.wipe img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+.wipe-a{clip-path:inset(0 calc(100% - var(--pos)) 0 0)}
+.wipe-bar{position:absolute;top:0;bottom:0;left:var(--pos);width:2px;margin-left:-1px;background:var(--text)}
+.wipe-bar span{position:absolute;top:50%;left:50%;width:36px;height:36px;margin:-18px 0 0 -18px;border-radius:50%;background:var(--text);box-shadow:0 1px 6px rgba(0,0,0,.4)}
+.wipe-range{width:100%;min-height:var(--tap-min)}
+.photocaps{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-2)}
+.photocap{display:flex;flex-direction:column;gap:2px;text-align:left;padding:8px 10px;border-radius:var(--r-2);background:var(--surface);min-height:var(--tap-min);font-size:var(--fs-label);color:var(--text-2)}
+.photocap b{color:var(--text);font-size:var(--fs-title)}
+.photocap:last-child{text-align:right;align-items:flex-end}
+.photocap.is-on{box-shadow:inset 0 0 0 2px var(--primary)}
+.timeline{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+.tl{flex:none;width:64px;display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-3);text-align:center}
+.tl img{width:64px;height:85px;object-fit:cover;border-radius:8px;background:var(--surface-2)}
+.tl.is-on img{outline:2px solid var(--primary);outline-offset:1px}
+.variantpick{margin-bottom:var(--s-2)}
+
 /* Exercise figure */
 .figbox{width:100%;aspect-ratio:16/9;background:var(--surface-2);border-radius:var(--r-3);
   display:flex;flex-direction:column;align-items:stretch;overflow:hidden;position:relative;
@@ -918,7 +953,7 @@ AC.store = (function () {
   var LS_KEY = 'athletic-cut:v1';
   var LS_BACKUP = 'athletic-cut:v1:pre-migrate';
   var LS_PREIMPORT = 'athletic-cut:v1:pre-import';
-  var SCHEMA_VERSION = 1;
+  var SCHEMA_VERSION = 2;
 
   var state = null;
   var subs = [];
@@ -926,7 +961,30 @@ AC.store = (function () {
   var lastSaveMs = 0;
 
   var MIGRATIONS = {
-    /* 1: initial schema. Future: 2: function (s) { …; s.schemaVersion = 2; return s; } */
+    /* 1: initial schema. */
+    /* 2: phases. The stored program is Phase 1; it gains the Day C indoor options. The current
+       run is recorded from the existing start date. Nothing else changes: history, metrics,
+       schedule and settings stay exactly as they were. */
+    2: function (s) {
+      if (s.program && Array.isArray(s.program.days)) {
+        if (!s.program.phaseId) s.program.phaseId = 'phase-1';
+        var seed = AC.seed.buildProgram();
+        s.program.days.forEach(function (d) {
+          var sd = seed.days.filter(function (x) { return x.id === d.id; })[0];
+          (d.blocks || []).forEach(function (b, i) {
+            var sb = sd && sd.blocks.filter(function (x) { return x.id === b.id; })[0];
+            if (sb && sb.variants && !b.variants) { b.variants = sb.variants; b.variantKey = sb.variantKey; b.variantPatches = sb.variantPatches; }
+          });
+        });
+      }
+      if (!Array.isArray(s.phaseRuns) || !s.phaseRuns.length) {
+        s.phaseRuns = [{ id: 'run-1', phaseId: 'phase-1', startDate: (s.schedule && s.schedule.programStartDate) || AC.util.todayKey(),
+          endDate: null, startCheckinId: null }];
+      }
+      if (!Array.isArray(s.checkins)) s.checkins = [];
+      s.schemaVersion = 2;
+      return s;
+    }
   };
 
   function migrate(raw) {
@@ -1509,7 +1567,24 @@ AC.seed = (function () {
 ['suitcase-carry','Suitcase carry','carry','kettlebell,dumbbell','Load in one hand, stand perfectly upright|Do not let the hip lean into the load|Ribs down, opposite obliques tight|Switch hands each trip','Leaning away from the bell|Shrugging the loaded shoulder',0,'kg','snap',1],
 ['kettlebell-clean','Kettlebell clean','hinge','kettlebell','Hike the bell back like a swing|Snap the hips, keep the elbow tight|Let the bell roll around the wrist|Catch in the rack with the forearm vertical','Casting the bell wide so it bangs the forearm|Pulling with the arm',0,'kg','snap',1],
 ['kettlebell-press','Kettlebell press','push-v','kettlebell','Rack position, wrist straight|Brace the glutes and abs|Press up and slightly out, bicep by the ear|Pull it back down into the rack','Leaning sideways to press|Bending the wrist back',0,'kg','snap',1],
-['kettlebell-front-squat','Kettlebell front squat','squat','kettlebell','Bell racked, elbow in|Sit down between the heels|Knees out, chest tall|Stand tall and re-brace','Twisting toward the loaded side|Letting the elbow flare so the bell pulls you forward',0,'kg','snap',1]
+['kettlebell-front-squat','Kettlebell front squat','squat','kettlebell','Bell racked, elbow in|Sit down between the heels|Knees out, chest tall|Stand tall and re-brace','Twisting toward the loaded side|Letting the elbow flare so the bell pulls you forward',0,'kg','snap',1],
+/* Phase 2 (Athletic Build) and indoor Day C. Cues come only from the Phase 2 coach review
+   (phase2/03-chatgpt-review.md) and the owner's indoor brief. No drawings yet: stick fallback. */
+['broad-jump','Broad jump','jump','none','Done fresh, before lifting|Crisp, with a controlled landing|Measure distance and landing control, not exhaustion','Jumping to exhaustion|Uncontrolled landings',0,null,null,0],
+['lateral-bound','Lateral bound','jump','none','Stick each landing|Skill and power work, not a fatigue circuit','Turning it into a fatigue circuit',0,null,null,1],
+['kneeling-rollout','Kneeling rollout','core','ab wheel,barbell','Limit it to the range you can control|Stop before you lose position|A barbell is fine if it rolls smoothly','Rolling past the range you can control',0,null,null,0],
+['dead-bug','Dead bug','core','none','Slowly, with a controlled exhale|Use it when rollout extension cannot be controlled','',0,null,null,1],
+['hanging-knee-raise','Hanging knee raise','core','pull-up bar','Controlled, with a pelvic curl|Keep two or more reps in reserve','Extra swinging that hides the ab work',0,null,null,0],
+['nordic-curl','Nordic hamstring curl','hinge','none','Assisted at first, with generous assistance|Stop before the descent gets uncontrolled|Reduce assistance only with control','Too much too soon: the soreness can compromise running',0,null,null,0],
+['slider-curl','Slider curl','hinge','sliders','The substitute when there is no safe Nordic anchor','',0,null,null,0],
+['copenhagen-plank','Copenhagen plank (short lever)','anti-rotation','bench','Short lever|Shorten the lever or the time if needed','',0,null,null,1],
+['acceleration','Acceleration run','sprint','track/hill','Percentages are perceived speed, not exact|Full recovery matters more than the clock','Cutting the rest short',0,null,null,0],
+['flying-sprint','Flying run','sprint','track/hill','20-30 m progressive run-in|Then the fast zone|Generous, gradual run-out','Sprinting toward a wall or an abrupt stopping point',0,null,null,0],
+['deceleration','Braking drill','sprint','track/hill','Approach, then stop under control|Leave enough space to slow down gradually','Stopping abruptly at a wall',0,null,null,0],
+['planned-cut','Planned cut','sprint','track/hill','Start at 45 degrees, progress to 90|A planned cut, not a reaction drill','',0,null,null,1],
+['spin-bike-sprint','Spin bike sprint','sprint','spin bike','All-out for 20 s|Heavy resistance|90 s easy between|Stop when the last two are noticeably slower than the first two','',0,null,null,0],
+['sled-push','Sled push','carry','sled','Arms long or bent, hands on the posts|Low body angle, drive through the balls of the feet|Short powerful steps, push the floor back|Keep the hips level, no twisting',"Standing too upright so the legs can't drive|Taking long slow steps",0,'lb',10,0],
+['rower-sprint','Rower sprint','sprint','rower','All-out for 20 s|90 s easy between|Stop when the last two are noticeably slower than the first two','',0,null,null,0]
   ];
 
   var SHORT_NAMES = {
@@ -1531,10 +1606,10 @@ AC.seed = (function () {
       out[r[0]] = {
         id: r[0], name: r[1], pattern: r[2],
         equipment: r[3].split(','),
-        cues: r[4].split('|'), mistakes: r[5].split('|'),
+        cues: r[4].split('|').filter(Boolean), mistakes: r[5].split('|').filter(Boolean),
         shortName: SHORT_NAMES[r[0]] || r[1],
         isMainLift: !!r[6], defaultLoadUnit: r[7], increment: r[8], unilateral: !!r[9],
-        mediaRef: r[0], userClipRef: null, isCustom: false
+        mediaRef: AC.drawings[r[0]] || AC.figures.F[r[0]] ? r[0] : 'generic-' + r[2], userClipRef: null, isCustom: false
       };
     });
     return out;
@@ -1553,7 +1628,7 @@ AC.seed = (function () {
 
   function slot(id, exerciseId, sets, repsTarget, opts) {
     opts = opts || {};
-    return {
+    var out = {
       id: id, exerciseId: exerciseId, sets: sets, repsTarget: repsTarget,
       rpeTarget: opts.rpe === undefined ? null : opts.rpe,
       loadType: opts.loadType || 'bodyweight',
@@ -1565,11 +1640,13 @@ AC.seed = (function () {
       weightThreshold: opts.weightThreshold || null,
       substitutions: opts.substitutions || []
     };
+    if (opts.timeLog) out.timeLog = opts.timeLog;   /* 'measured': log the time taken, no hold timer */
+    return out;
   }
 
   function buildProgram() {
     return {
-      id: 'athletic-cut', name: 'Athletic Cut', weeks: 12, weeksMax: 14,
+      id: 'athletic-cut', phaseId: 'phase-1', name: 'Athletic Cut', weeks: 12, weeksMax: 14,
       goal: '199.7 lb to about 192 lb at roughly 10% scanner body fat, keeping all 172 lb of lean mass.',
       format: '4 required days, 1 optional. 35-40 min each.',
       rpeNote: 'RPE 8 means you could have done two more. Never grind to failure on the main lift during a cut.',
@@ -1647,12 +1724,12 @@ AC.seed = (function () {
             slot('c-prep-3', 'a-skip', 2, METERS(2, 20, '2 x 20 m'), { loadType: 'none' }),
             slot('c-prep-4', 'build-up-run', 3, METERS(3, 40, '3 x 40 m at 60%, 75%, 85%'), { loadType: 'none' })
           ] },
-          { id: 'c-sprints', kind: 'sprints', mode: 'interval', label: 'Sprints', targetMinutes: 16, restSeconds: 90,
+          Object.assign({ id: 'c-sprints', kind: 'sprints', mode: 'interval', label: 'Sprints', targetMinutes: 16, restSeconds: 90,
             instructions: 'Hill if you have one, flat track otherwise. Walk back, take a full 90 seconds. Quality work, not conditioning-by-exhaustion.',
             interval: { effortsMin: 8, effortsMax: 10, effortSecondsMin: 15, effortSecondsMax: 20, effortSecondsDefault: 20, restSeconds: 90,
               stopRule: 'If the last two are noticeably slower than the first two, stop.' }, items: [
             slot('c-sprints-1', 'sprint', 8, { kind: 'seconds', value: 20, display: '8-10 x 15-20 s' }, { loadType: 'none', logMetric: 'time', logged: true })
-          ] },
+          ] }, sprintVariants()),
           { id: 'c-rot', kind: 'superset', mode: 'rounds', label: 'Rotational circuit', targetMinutes: 8, rounds: 2, restSeconds: 60,
             instructions: '2 rounds.', items: [
             slot('c-rot-1', 'landmine-rotation', 2, RS(8), { loadType: 'barbell', logMetric: 'reps', logged: true }),
@@ -1717,6 +1794,267 @@ AC.seed = (function () {
     };
   }
 
+  /* Day C indoor options for Phase 1 (owner: spin bike and rower, no air bike). */
+  function sprintVariants() {
+    function iv() { return { effortsMin: 8, effortsMax: 10, effortSecondsMin: 20, effortSecondsMax: 20, effortSecondsDefault: 20, restSeconds: 90,
+      stopRule: 'If the last two are noticeably slower than the first two, stop.' }; }
+    return {
+      variantKey: 'sprintMode',
+      variants: [{ id: 'track', label: 'Track' }, { id: 'bike', label: 'Spin bike' }, { id: 'rower', label: 'Rower' }, { id: 'sled', label: 'Sled push' }],
+      variantPatches: {
+        sled: { mode: 'straight-sets', restSeconds: 105,
+          instructions: 'Sled push: 6-8 pushes of 15 m, heavy enough that each takes about 15-20 s of hard driving. Walk back, 90-120 s rest. Stop if the last two are clearly slower. Log the load and the time of each push.',
+          items: [slot('c-sprints-sled', 'sled-push', 6, { kind: 'seconds', value: 18, display: '6-8 x 15 m, 15-20 s each' },
+            { loadType: 'sled', logMetric: 'time', timeLog: 'measured', logged: true, seconds: 18, distanceM: 15, notes: 'Add a push (up to 8) if the times hold.' })] },
+        bike: { instructions: 'Spin bike: 8-10 x 20 s all-out, heavy resistance, 90 s easy spinning between. Same stop rule.',
+          interval: iv(), items: [slot('c-sprints-bike', 'spin-bike-sprint', 8, { kind: 'seconds', value: 20, display: '8-10 x 20 s all-out' }, { loadType: 'none', logMetric: 'time', logged: true })] },
+        rower: { instructions: 'Rower: 8-10 x 20 s all-out, 90 s easy rowing between. Same stop rule.',
+          interval: iv(), items: [slot('c-sprints-rower', 'rower-sprint', 8, { kind: 'seconds', value: 20, display: '8-10 x 20 s all-out' }, { loadType: 'none', logMetric: 'time', logged: true })] }
+      }
+    };
+  }
+
+  /* weeks: {'1-3,5': x} → {1: x, 2: x, 3: x, 5: x} */
+  function W(spec) {
+    var out = {};
+    Object.keys(spec).forEach(function (k) {
+      k.split(',').forEach(function (r) {
+        var p = r.split('-'), a = +p[0], b = +(p[1] || p[0]);
+        for (var w = a; w <= b; w++) out[w] = spec[k];
+      });
+    });
+    return out;
+  }
+  function T(display) { return { kind: 'text', display: display }; }
+  var BUILD = '1-3,5-7,9-11', LIGHT = '4,8,12';
+
+  /* Phase 2 = Athletic Build, phase weeks 1-12 (weeks 13-24 overall). Every prescription is the
+     corrected table in phase2/03-chatgpt-review.md section 7. Where a range has to become one
+     number for the app, rpeTarget is the top of the range and the rest timer the middle; the
+     exact wording is kept in the instructions. */
+  function buildPhase2() {
+    var MAIN = [null,
+      [3, 4, 7, 'RPE 6-7', 150, '2-3 min'], [3, 4, 7, 'RPE 7', 150, '2-3 min'], [4, 4, 8, 'RPE 7-8', 150, '2-3 min'],
+      [2, 4, 6, 'RPE 6', 120, '2 min'], [3, 3, 7, 'RPE 7', 150, '2-3 min'], [4, 3, 8, 'RPE 7-8', 150, '2-3 min'],
+      [4, 3, 8, 'RPE 8 or less', 150, '2-3 min'], [2, 3, 6, 'RPE 6', 120, '2 min'], [3, 3, 8, 'RPE 7-8', 150, '2-3 min'],
+      [3, 3, 8, 'RPE 8 or less', 150, '2-3 min'], [3, 2, 8, 'RPE 8 or less, fast intent', 180, '3 min'],
+      [2, 3, 8, 'Benchmark triple at RPE 8 or less, then a lighter back-off triple at RPE 6', 180, '3 min']];
+    function mainBlock(id, exId, name, extra) {
+      var weeks = {}, iw = {};
+      for (var w = 1; w <= 12; w++) {
+        var m = MAIN[w];
+        var txt = name + ': ' + (w === 12 ? '1 x 3 + 1 x 3' : m[0] + ' x ' + m[1]) + ' @ ' + m[3] + ', rest ' + m[5] + '.' + (extra ? ' ' + extra : '');
+        weeks[w] = { instructions: txt, restSeconds: m[4] };
+        iw[w] = { sets: m[0], repsTarget: { kind: 'reps', min: m[1], max: m[1] }, rpeTarget: m[2] };
+      }
+      var s = slot(id + '-1', exId, 3, R(4, 4), { rpe: 7, loadType: exId === 'weighted-pull-up' ? 'weighted-bodyweight' : 'barbell', logMetric: 'reps', logged: true,
+        substitutions: exId === 'weighted-pull-up' ? ['pull-up'] : exId === 'front-squat' ? ['safety-bar-squat'] : [], notes: extra || '' });
+      s.weeks = iw;
+      return { id: id, kind: 'main', mode: 'straight-sets', label: 'Main lift', targetMinutes: 14, restSeconds: 150,
+        instructions: weeks[1].instructions, weeks: weeks, items: [s] };
+    }
+    function pair(id, label, a, b, buildTxt, lightTxt, restB, restL, mins) {
+      var bl = { id: id, kind: 'superset', mode: 'rounds', label: label, targetMinutes: mins, rounds: 2, restSeconds: restB,
+        instructions: buildTxt, weeks: W((function () { var o = {}; o[BUILD] = { rounds: 2, restSeconds: restB, instructions: buildTxt };
+          o[LIGHT] = { rounds: 1, restSeconds: restL, instructions: lightTxt }; return o; })()), items: [a, b] };
+      return bl;
+    }
+    function lightW(item, reps) { var o = {}; o[LIGHT] = { repsTarget: reps, sets: 1 }; item.weeks = W(o); return item; }
+    function warm(id, mins, text, items) {
+      return { id: id, kind: 'prep', mode: 'checklist', label: 'Warm-up', targetMinutes: mins, restSeconds: 0, instructions: text, items: items };
+    }
+    function optMob(id, exId) {
+      return { id: id, kind: 'mobility', mode: 'checklist', label: 'Mobility', targetMinutes: 2, restSeconds: 0,
+        instructions: 'Optional: comfortable mobility for 1-2 min if time remains. Relaxed.', items: [slot(id + '-1', exId, 1, T('1-2 min, optional'))] };
+    }
+
+    /* ---- Day C speed block, per week ---- */
+    function cs(n, exId, display) { return slot('p2c-speed-' + n, exId, 1, T(display), { loadType: 'none' }); }
+    var SPEED = [null,
+      [[cs(1, 'lateral-bound', '2 x 2/side, controlled'), cs(2, 'acceleration', '4 x 10 m at 75-85%'), cs(3, 'deceleration', '4 x 10 m approach-and-stop, easy')], 'Rest 45-60 s between bounds, 2 min between runs, 60 s between braking reps.'],
+      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '4 x 15 m at 80-90%'), cs(3, 'deceleration', '4 braking reps, controlled stopping')], 'Rest 45-60 s between bounds, 2 min between runs, 60 s between braking reps.'],
+      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '4 x 20 m at 85-90%'), cs(4, 'planned-cut', '45 degrees, 2 cuts/side at 70-80%')], 'Rest 60 s between bounds, 2-3 min between runs, 60-90 s between cuts.'],
+      [[cs(1, 'lateral-bound', '1 x 2/side'), cs(2, 'acceleration', '3 x 10 m relaxed, 70-80%'), cs(3, 'deceleration', '2 braking reps, easy')], 'Rest 60 s, 2 min between runs, 60 s between braking reps.'],
+      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m at about 90%'), cs(5, 'flying-sprint', '2 x 10 m fly at about 90%'), cs(4, 'planned-cut', '45 degrees, 2 cuts/side at 75-85%')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m, 90-95% only if comfortable'), cs(5, 'flying-sprint', '2 x 10 m fly, 90-95% only if comfortable'), cs(4, 'planned-cut', '45 degrees, 2 cuts/side, controlled')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m at 90-95%'), cs(5, 'flying-sprint', '2 x 10 m fly at 90-95%'), cs(4, 'planned-cut', '90 degrees, 2 cuts/side at 75-85%')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      [[cs(1, 'lateral-bound', '1 x 2/side'), cs(2, 'acceleration', '3 x 15 m relaxed, 75-85%'), cs(4, 'planned-cut', '45 degrees, 1 cut/side, easy')], 'Rest 60 s, 2 min between runs, 90 s between cuts.'],
+      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m, up to 95%'), cs(5, 'flying-sprint', '2 x 10 m fly, up to 95%'), cs(4, 'planned-cut', '90 degrees, 2 crisp cuts/side')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m, repeat the quality'), cs(5, 'flying-sprint', '2 x 10 m fly, do not add volume'), cs(4, 'planned-cut', '90 degrees, 2 cuts/side')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      [[cs(1, 'lateral-bound', '1 x 3/side'), cs(2, 'acceleration', '2 x 20 m, fast and relaxed'), cs(5, 'flying-sprint', '2 x 10 m fly, fast and relaxed'), cs(4, 'planned-cut', '90 degrees, 1 cut/side')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts. Less total work.'],
+      [[cs(2, 'acceleration', '3 x 20 m benchmark, best technically sound efforts'), cs(4, 'planned-cut', 'Familiar 90 degree cut, 1/side')], 'Rest 3 min between runs, 90 s between cuts. No unfamiliar maximal drill.']];
+    var SPEED_NOTE = ' Full recovery matters more than the clock. If sprint readiness is uncertain, repeat weeks 1-3 instead of starting flying runs. Leave space to slow down gradually; never sprint toward a wall.';
+    /* Indoor (10-20 m track): accelerations capped at 15 m, flying runs become 20 s spin bike sprints. */
+    function indoor(items) {
+      return items.map(function (it) {
+        var c = JSON.parse(JSON.stringify(it));
+        if (c.exerciseId === 'acceleration') c.repsTarget.display = c.repsTarget.display.replace(/(\d+) m/, function (m, d) { return Math.min(+d, 15) + ' m'; }) + ' (indoors, 15 m max)';
+        if (c.exerciseId === 'flying-sprint') {
+          c.exerciseId = 'spin-bike-sprint'; c.id = 'p2c-speed-bike';
+          c.repsTarget = T(c.repsTarget.display.replace(/^(\d+) x 10 m fly/, '$1 x 20 s spin bike sprint') + ', heavy resistance');
+        }
+        return c;
+      });
+    }
+    /* Sled option: the sled push takes the bike sprints' place (same count), never both. */
+    function sled(items) {
+      return indoor(items).map(function (c) {
+        if (c.exerciseId !== 'spin-bike-sprint') return c;
+        var n = (/^(\d+) x/.exec(c.repsTarget.display) || [0, 2])[1];
+        return slot('p2c-speed-sled', 'sled-push', 1, T(n + ' x 15 m sled push, 15-20 s of hard driving each, 90-120 s walk-back rest'), { loadType: 'none' });
+      });
+    }
+    var speedWeeks = {};
+    for (var w = 1; w <= 12; w++) {
+      var hasFly = SPEED[w][0].some(function (i) { return i.exerciseId === 'flying-sprint'; });
+      speedWeeks[w] = { items: SPEED[w][0], instructions: SPEED[w][1] + SPEED_NOTE,
+        variantPatches: { indoor: { items: indoor(SPEED[w][0]), instructions: 'Indoors: accelerations capped at 15 m; flying runs become 20 s spin bike sprints. ' + SPEED[w][1] + SPEED_NOTE },
+          sled: { items: sled(SPEED[w][0]), instructions: (hasFly ? 'Indoors with the sled: accelerations capped at 15 m; sled pushes replace the flying runs (no bike sprints today). '
+            : 'Indoors: accelerations capped at 15 m. No flying runs this week, so no sled pushes either. ') + SPEED[w][1] + SPEED_NOTE } } };
+    }
+
+    /* ---- Day D hamstrings ---- */
+    var ham = slot('p2d-ham-1', 'nordic-curl', 1, R(3, 3), { loadType: 'bodyweight', logMetric: 'reps', logged: true, substitutions: ['slider-curl'],
+      notes: 'Assisted. Use sliders if there is no safe anchor.' });
+    ham.weeks = W({ '1': { sets: 1, repsTarget: R(3, 3), notes: 'Assisted Nordic, generous assistance. Or 1 x 6 slider curls.' },
+      '2-3': { sets: 2, repsTarget: R(3, 3), notes: 'Stop before an uncontrolled descent. Or 2 x 6-8 slider curls.' },
+      '5-7,9-11': { sets: 2, repsTarget: R(4, 4), notes: 'Reduce assistance only with control. Or 2 x 8 slider curls.' },
+      '4,8,12': { exerciseId: 'slider-curl', sets: 1, repsTarget: R(6, 6), notes: 'Easy.' } });
+    var hamBlock = { id: 'p2d-ham', kind: 'finisher', mode: 'straight-sets', label: 'Hamstrings', targetMinutes: 5, restSeconds: 90,
+      instructions: 'Assisted Nordic curl, 1 x 3, controlled. Rest 90 s.', items: [ham],
+      weeks: W({ '1': { instructions: 'Assisted Nordic curl 1 x 3 (or slider curl 1 x 6). Controlled, generous assistance. Rest 90 s.' },
+        '2-3': { instructions: 'Nordic curl 2 x 3 (or slider curl 2 x 6-8). Stop before an uncontrolled descent. Rest 90 s.' },
+        '5-7,9-11': { instructions: 'Nordic curl 2 x 4 (or slider curl 2 x 8). Reduce assistance only with control. Rest 90 s.' },
+        '4,8,12': { instructions: 'Slider curl 1 x 6, easy. Rest 60 s.', restSeconds: 60 } }) };
+
+    var jumpItem = slot('p2a-jump-1', 'broad-jump', 1, T('3 x 2'), { loadType: 'none', substitutions: ['box-jump'] });
+    jumpItem.weeks = W({ '1-3,5-7,9-11': { repsTarget: T('3 x 2, crisp, controlled landing') }, '4,8': { repsTarget: T('2 x 2, comfortable, submaximal') },
+      '12': { repsTarget: T('3 x 1 benchmark, best controlled effort, measure it the same way') } });
+
+    return {
+      id: 'athletic-build', phaseId: 'phase-2', name: 'Athletic Build', weeks: 12, weeksMax: 12,
+      goal: 'Stronger, faster, more athletic, lean, with a strong core. Not bulk. Maintenance calories, protein 190-200 g.',
+      format: '4 required days (Mon A, Tue B, Thu C, Sat D), 1 optional. About 40-45 min each.',
+      rpeNote: 'RPE 7 is about three reps in reserve, RPE 8 about two. Jumps and sprints are about quality and speed, not effort.',
+      requiredDayIds: ['day-a', 'day-b', 'day-c', 'day-d'],
+      optionalDayId: 'day-e',
+      days: [
+        { id: 'day-a', letter: 'A', label: 'Lower: jumps + hinge', type: 'strength', blocks: [
+          warm('p2a-prep', 9, '8-9 min total: brief easy movement, dynamic hips and ankles, squat and hinge rehearsal, then ramp-up sets on the main lift. Easy, non-fatiguing.', [
+            slot('p2a-prep-1', 'jog', 1, T('Brief easy movement'), { loadType: 'none' }),
+            slot('p2a-prep-2', 'hip-90-90', 1, T('Dynamic hips and ankles')),
+            slot('p2a-prep-3', 'glute-bridge', 1, T('Squat and hinge rehearsal'))]),
+          { id: 'p2a-jump', kind: 'jumps', mode: 'checklist', label: 'Jumps', targetMinutes: 4, restSeconds: 75,
+            instructions: 'Broad jumps before lifting, done fresh. Box jump is the substitute if you already know it. Rest 60-90 s.', items: [jumpItem],
+            weeks: W({ '12': { instructions: 'Broad-jump benchmark: 3 x 1, best controlled effort, measured the same way each time. Rest 90 s.' } }) },
+          mainBlock('p2a-main', 'trap-bar-deadlift', 'Trap bar deadlift'),
+          pair('p2a-ss', 'Superset',
+            lightW(slot('p2a-ss-1', 'bulgarian-split-squat', 2, RS(6, 6), { loadType: 'dumbbell', logMetric: 'reps', logged: true, notes: 'Rear-foot-elevated split squat. Whole-foot pressure, controlled depth, comfortable stance.' }), RS(6, 6)),
+            lightW(slot('p2a-ss-2', 'kneeling-rollout', 2, R(5, 8), { loadType: 'bodyweight', logMetric: 'reps', logged: true, substitutions: ['dead-bug'], notes: 'Stop before you lose position. Dead bug 2 x 6/side if rollout is unsuitable.' }), R(5, 5)),
+            'RFESS 2 x 6/side + kneeling rollout 2 x 5-8 @ RPE 7-8. Rest 60-90 s after each pair.', 'Lighter week: 1 x 6/side + 1 x 5 @ RPE 6. Rest 60 s.', 75, 60, 11),
+          optMob('p2a-mob', 'hip-90-90')
+        ] },
+        { id: 'day-b', letter: 'B', label: 'Upper strength', type: 'strength', blocks: [
+          warm('p2b-prep', 8, '7-8 min total: brief easy movement, shoulder and scapular rehearsal, then pull-up ramp-up sets. Easy, non-fatiguing.', [
+            slot('p2b-prep-1', 'jog', 1, T('Brief easy movement'), { loadType: 'none' }),
+            slot('p2b-prep-2', 'band-pull-apart', 1, T('Shoulder and scapular rehearsal'), { loadType: 'band' })]),
+          mainBlock('p2b-main', 'weighted-pull-up', 'Weighted pull-up', 'Use assistance if bodyweight already goes past the effort cap.'),
+          pair('p2b-ss-a', 'Superset A',
+            lightW(slot('p2b-ss-a-1', 'overhead-press', 2, R(5, 6), { loadType: 'barbell', logMetric: 'reps', logged: true, notes: 'Strict press.' }), R(5, 5)),
+            lightW(slot('p2b-ss-a-2', 'chest-supported-row', 2, R(8, 10), { loadType: 'dumbbell', logMetric: 'reps', logged: true }), R(8, 8)),
+            'Strict press 2 x 5-6 + chest-supported row 2 x 8-10 @ RPE 7-8. Rest 90 s after each pair.', 'Lighter week: 1 set each at the bottom of the range, RPE 6. Rest 60-90 s.', 90, 75, 12),
+          pair('p2b-ss-b', 'Superset B',
+            lightW(slot('p2b-ss-b-1', 'hanging-knee-raise', 2, R(6, 10), { loadType: 'bodyweight', logMetric: 'reps', logged: true }), R(6, 6)),
+            lightW(slot('p2b-ss-b-2', 'farmers-carry', 2, { kind: 'meters', min: 1, value: 30, display: '20-30 m' }, { loadType: 'dumbbell', logMetric: 'distance', logged: true, distanceM: 30, notes: 'Keep grip and posture in reserve.' }), { kind: 'meters', min: 1, value: 20, display: '20 m, easy' }),
+            'Hanging knee raise 2 x 6-10 (2+ reps in reserve) + farmer\'s carry 2 x 20-30 m. Rest 60 s after each pair.', 'Lighter week: 1 set each at the bottom of the range, easy carry. Rest 60-90 s.', 60, 75, 7),
+          optMob('p2b-mob', 'dead-hang')
+        ] },
+        (function () {
+          var speed = { id: 'p2c-speed', kind: 'sprints', mode: 'checklist', label: 'Speed + cuts', targetMinutes: 22, restSeconds: 0,
+            instructions: SPEED[1][1] + SPEED_NOTE, items: SPEED[1][0], weeks: speedWeeks,
+            variantKey: 'speedMode', variants: [{ id: 'outdoor', label: 'Outdoors' }, { id: 'indoor', label: 'Indoors · bike' }, { id: 'sled', label: 'Indoors · sled' }] };
+          var core = pair('p2c-core', 'Core',
+            slot('p2c-core-1', 'pallof-press', 2, RS(8, 8), { loadType: 'cable', logMetric: 'reps', logged: true, notes: '2 s hold.' }),
+            slot('p2c-core-2', 'copenhagen-plank', 2, { kind: 'seconds-each-side', value: 20, display: '15-20 s/side' }, { loadType: 'bodyweight', logMetric: 'time', logged: true, seconds: 20 }),
+            'Pallof press 2 x 8/side with a 2 s hold + short-lever Copenhagen plank 2 x 15-20 s/side. Controlled. Rest 30-45 s after each pair.',
+            'Lighter week: Pallof press 1 x 8/side + ordinary side plank 1 x 20 s/side. Easy. Rest 30-45 s.', 40, 40, 6);
+          var lw = {}; lw[LIGHT] = { exerciseId: 'side-plank', sets: 1, repsTarget: { kind: 'seconds-each-side', value: 20, display: '20 s/side' } };
+          core.items[1].weeks = W(lw);
+          return { id: 'day-c', letter: 'C', label: 'Speed, landing + cuts', type: 'conditioning',
+            note: 'Real speed work: full rest, fresh legs. Not conditioning.', blocks: [
+            warm('p2c-prep', 12, '10-12 min: easy jogging, dynamic ankle and hip work, marching and skipping, progressive build-ups.', [
+              slot('p2c-prep-1', 'jog', 1, T('10-12 min easy, with the drills below'), { loadType: 'none' }),
+              slot('p2c-prep-2', 'leg-swing', 1, T('Dynamic ankle and hip work'), { loadType: 'none' }),
+              slot('p2c-prep-3', 'a-skip', 1, T('Marching and skipping'), { loadType: 'none' }),
+              slot('p2c-prep-4', 'build-up-run', 1, T('Progressive build-ups'), { loadType: 'none' })]),
+            speed, core
+          ] };
+        })(),
+        { id: 'day-d', letter: 'D', label: 'Squat + press', type: 'strength', blocks: [
+          warm('p2d-prep', 9, '8-9 min total: brief easy movement, dynamic hips and ankles, squat rehearsal, then ramp-up sets on the main lift. Easy, non-fatiguing.', [
+            slot('p2d-prep-1', 'jog', 1, T('Brief easy movement'), { loadType: 'none' }),
+            slot('p2d-prep-2', 'hip-90-90', 1, T('Dynamic hips and ankles')),
+            slot('p2d-prep-3', 'goblet-squat', 1, T('Squat rehearsal'), { loadType: 'kettlebell' })]),
+          mainBlock('p2d-main', 'front-squat', 'Front squat', 'Or safety-bar squat. Keep the same variation all phase.'),
+          pair('p2d-ss', 'Superset',
+            lightW(slot('p2d-ss-1', 'dumbbell-bench-press', 2, R(6, 8), { loadType: 'dumbbell', logMetric: 'reps', logged: true }), R(6, 6)),
+            lightW(slot('p2d-ss-2', 'chest-supported-row', 2, R(8, 10), { loadType: 'dumbbell', logMetric: 'reps', logged: true }), R(8, 8)),
+            'DB bench press 2 x 6-8 + chest-supported row 2 x 8-10 @ RPE 7-8. Rest 90 s after each pair.', 'Lighter week: 1 x 6 + 1 x 8 @ RPE 6. Rest 60-90 s.', 90, 75, 11),
+          hamBlock,
+          optMob('p2d-mob', 'thoracic-rotation')
+        ] },
+        { id: 'day-e', letter: 'E', label: 'Optional', type: 'optional', note: 'Pick one.', blocks: [], options: [
+          { id: 'easy', label: 'Easy cardio', description: 'Walk, cycle or a familiar easy jog. 20-35 min continuous, conversational.',
+            blocks: [{ id: 'p2e-easy', kind: 'freeform', mode: 'freeform', label: 'Easy cardio', targetMinutes: 30, restSeconds: 0,
+              instructions: 'Walk, cycle or familiar easy jog, 20-35 min, conversational.', items: [] }] },
+          { id: 'sport', label: 'Sport', description: 'A familiar recreational sport. Easy or moderate by default. A hard session counts as training load, not a free bonus.',
+            blocks: [{ id: 'p2e-sport', kind: 'freeform', mode: 'freeform', label: 'Sport', targetMinutes: 40, restSeconds: 0,
+              instructions: 'Log what you played and for how long.', items: [] }] },
+          { id: 'nothing', label: 'Rest', description: 'Rest is a valid choice.', blocks: [] }
+        ] }
+      ]
+    };
+  }
+
+  var PHASES = [
+    { id: 'phase-1', number: 1, name: 'Athletic Cut', weeks: 12,
+      summary: 'The cut: 4 days + 1 optional, 35-40 min. Heavy main lift, supersets, a finisher and repeat sprints on Day C.' },
+    { id: 'phase-2', number: 2, name: 'Athletic Build', weeks: 12,
+      summary: 'Stronger and faster, not bigger: jumps first, heavy lifts 2-3 reps short, real speed work with full rest, no exhausting finishers. 40-45 min.' }
+  ];
+  function buildPhase(id) { return id === 'phase-2' ? buildPhase2() : buildProgram(); }
+  function phaseOf(program) { return program && program.phaseId === 'phase-2' ? 'phase-2' : 'phase-1'; }
+
+  /* The week of the current phase run, 1-based, clamped to the phase length. */
+  function programWeek(st) {
+    var w = Math.floor(AC.util.daysBetween(st.schedule.programStartDate, AC.util.todayKey()) / 7) + 1;
+    return Math.max(1, Math.min(w, (st.program && st.program.weeks) || 12));
+  }
+
+  /* A day's blocks for one week: week overrides, then the chosen indoor/outdoor variant.
+     Returns a deep copy, so the stored program never changes. */
+  function resolveBlocks(blocks, week, settings) {
+    return JSON.parse(JSON.stringify(blocks || [])).map(function (b) {
+      var wp = b.weeks && b.weeks[week];
+      if (wp) for (var k in wp) if (k !== 'variantPatches') b[k] = wp[k];
+      (b.items || []).forEach(function (it) {
+        var iw = it.weeks && it.weeks[week];
+        if (iw) for (var k2 in iw) it[k2] = iw[k2];
+        delete it.weeks;
+      });
+      if (b.variants) {
+        var want = settings && settings[b.variantKey];
+        var vid = b.variants.some(function (v) { return v.id === want; }) ? want : b.variants[0].id;
+        var vp = (wp && wp.variantPatches && wp.variantPatches[vid]) || (b.variantPatches && b.variantPatches[vid]);
+        if (vp) for (var k3 in vp) b[k3] = JSON.parse(JSON.stringify(vp[k3]));
+        b.variant = vid;
+      }
+      (b.items || []).forEach(function (it) { delete it.weeks; });
+      delete b.weeks; delete b.variantPatches;
+      return b;
+    });
+  }
+
   function defaultSettings() {
     return {
       loadUnit: 'lb', bodyweightUnit: 'lb', waistUnit: 'in',
@@ -1732,7 +2070,9 @@ AC.seed = (function () {
       /* v2: plate calculator. Bar weights are yours to set: a trap bar's weight varies by model. */
       barWeightLb: 45, barWeightKg: 20, trapBarWeightLb: 45, trapBarWeightKg: 20,
       platesLb: [45, 35, 25, 10, 5, 2.5], platesKg: [25, 20, 15, 10, 5, 2.5, 1.25],
-      favorites: []
+      favorites: [],
+      /* Day C: remembered indoor/outdoor choice per phase. */
+      sprintMode: 'track', speedMode: 'outdoor'
     };
   }
 
@@ -1753,6 +2093,8 @@ AC.seed = (function () {
       metrics: [],
       nutrition: {},
       scans: [],
+      phaseRuns: [{ id: 'run-1', phaseId: 'phase-1', startDate: today, endDate: null, startCheckinId: null }],
+      checkins: [],
       flags: { dismissedStalls: {}, lastWeeklyReviewWeek: null, lastWaistPromptWeek: null,
         seenTypeHint: false, seenRestHint: false, lastExportPrompt: null }
     };
@@ -1780,6 +2122,11 @@ AC.seed = (function () {
     if (!Array.isArray(s.sessions)) s.sessions = [];
     if (!Array.isArray(s.metrics)) s.metrics = [];
     if (!Array.isArray(s.scans)) s.scans = [];
+    if (!Array.isArray(s.checkins)) s.checkins = [];
+    if (!Array.isArray(s.phaseRuns) || !s.phaseRuns.length) {
+      s.phaseRuns = [{ id: 'run-1', phaseId: phaseOf(s.program), startDate: (s.schedule && s.schedule.programStartDate) || AC.util.todayKey(),
+        endDate: null, startCheckinId: null }];
+    }
     if (!s.nutrition || typeof s.nutrition !== 'object') s.nutrition = {};
     if (s.activeSession === undefined) s.activeSession = null;
     if (typeof s.onboarded !== 'boolean') s.onboarded = (s.sessions.length > 0 || s.metrics.length > 0);
@@ -1789,9 +2136,115 @@ AC.seed = (function () {
 
   return {
     EX_ROWS: EX_ROWS, buildExercises: buildExercises, buildProgram: buildProgram,
+    buildPhase2: buildPhase2, buildPhase: buildPhase, PHASES: PHASES, phaseOf: phaseOf,
+    programWeek: programWeek, resolveBlocks: resolveBlocks,
     defaultSettings: defaultSettings, freshState: freshState, reconcile: reconcile,
     R: R, RS: RS, SEC: SEC, SECS: SECS, ACC: ACC, AMRAP: AMRAP, TRIPS: TRIPS, MIN: MIN
   };
+})();
+
+/* --------------------------------------------------------------------------
+   7b. photos — progress photos (front / side / back). IndexedDB only, never
+   localStorage, never the network. Each photo is re-encoded through a canvas
+   (long edge 1280, JPEG 0.8), which also drops EXIF and location data.
+   -------------------------------------------------------------------------- */
+AC.photos = (function () {
+  var DB = 'athletic-cut-photos', VER = 1, STORE = 'photos';
+  var dbp = null, urls = {};
+  var QUOTA_MSG = 'Not enough storage on this phone for that photo. Delete a few old photos or free some space, then try again.';
+  function open() {
+    if (dbp) return dbp;
+    dbp = new Promise(function (resolve, reject) {
+      if (!window.indexedDB) return reject(new Error('This browser cannot store photos.'));
+      var req = indexedDB.open(DB, VER);
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { dbp = null; reject(req.error); };
+    });
+    return dbp;
+  }
+  function friendly(e) {
+    var quota = e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));
+    return new Error(quota ? QUOTA_MSG : 'The photo could not be saved. ' + ((e && e.message) || ''));
+  }
+  function tx(mode, fn) {
+    return open().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var t, out;
+        try { t = db.transaction(STORE, mode); out = fn(t.objectStore(STORE)); }
+        catch (e) { return reject(e); }
+        t.oncomplete = function () { resolve(out && out.result !== undefined ? out.result : out); };
+        t.onerror = function () { reject(t.error); };
+        t.onabort = function () { reject(t.error); };
+      });
+    });
+  }
+  /* Resize + re-encode. Drawing to a canvas keeps the pixels and nothing else. */
+  function compress(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var k = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob(function (b) { if (b) resolve({ blob: b, w: c.width, h: c.height }); else reject(new Error('Could not read that photo.')); }, 'image/jpeg', 0.8);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('Could not read that photo.')); };
+      img.src = url;
+    });
+  }
+  function put(rec) { return tx('readwrite', function (s) { return s.put(rec); }).then(function () { return rec.id; }, function (e) { throw friendly(e); }); }
+  function all() {
+    return tx('readonly', function (s) { return s.getAll(); })
+      .then(function (r) { return (r || []).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.createdAt < b.createdAt ? -1 : 1); }); },
+        function () { return []; });
+  }
+  function del(id) {
+    if (urls[id]) { URL.revokeObjectURL(urls[id]); delete urls[id]; }
+    return tx('readwrite', function (s) { return s.delete(id); });
+  }
+  function url(rec) {
+    if (!rec || !rec.blob) return '';
+    if (!urls[rec.id]) urls[rec.id] = URL.createObjectURL(rec.blob);
+    return urls[rec.id];
+  }
+  function blobToDataUrl(b) {
+    return new Promise(function (resolve) { var r = new FileReader(); r.onload = function () { resolve(r.result); }; r.readAsDataURL(b); });
+  }
+  function dataUrlToBlob(d) {
+    var m = /^data:([^;]+);base64,(.*)$/.exec(d || '');
+    if (!m) throw new Error('A photo in that file is damaged.');
+    var bin = atob(m[2]), u = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return new Blob([u], { type: m[1] });
+  }
+  /* Photos have their own backup file so the main backup stays small. */
+  function exportJSON() {
+    return all().then(function (list) {
+      return Promise.all(list.map(function (p) {
+        return blobToDataUrl(p.blob).then(function (d) {
+          var o = {}; for (var k in p) if (k !== 'blob') o[k] = p[k]; o.dataUrl = d; return o;
+        });
+      })).then(function (rows) { return JSON.stringify({ app: 'athletic-cut-photos', version: 1, exportedAt: new Date().toISOString(), photos: rows }); });
+    });
+  }
+  function importJSON(text) {
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { return Promise.reject(new Error('Not valid JSON.')); }
+    if (!parsed || parsed.app !== 'athletic-cut-photos' || !Array.isArray(parsed.photos)) return Promise.reject(new Error('Not a photos backup.'));
+    return parsed.photos.reduce(function (p, row) {
+      return p.then(function () {
+        var b = dataUrlToBlob(row.dataUrl);
+        var rec = {}; for (var k in row) if (k !== 'dataUrl') rec[k] = row[k]; rec.blob = b; return put(rec);
+      });
+    }, Promise.resolve()).then(function () { return parsed.photos.length; });
+  }
+  return { open: open, compress: compress, put: put, all: all, del: del, url: url, exportJSON: exportJSON, importJSON: importJSON, QUOTA_MSG: QUOTA_MSG };
 })();
 
 /* --------------------------------------------------------------------------
@@ -2847,8 +3300,8 @@ AC.engine = (function () {
     return s.loadUnit;
   }
   function increment(loadType, unit) {
-    var lb = { barbell: 5, dumbbell: 5, cable: 5, 'weighted-bodyweight': 2.5 };
-    var kg = { barbell: 2.5, dumbbell: 2, cable: 2.5, 'weighted-bodyweight': 1.25 };
+    var lb = { barbell: 5, dumbbell: 5, cable: 5, 'weighted-bodyweight': 2.5, sled: 10 };
+    var kg = { barbell: 2.5, dumbbell: 2, cable: 2.5, 'weighted-bodyweight': 1.25, sled: 5 };
     return (unit === 'kg' ? kg : lb)[loadType] || null;
   }
   function kbList() { return S().settings.kettlebellSizesKg; }
@@ -2994,7 +3447,73 @@ AC.engine = (function () {
       var opt = day.options.filter(function (o) { return o.id === optionId; })[0];
       blocks = opt ? opt.blocks : [];
     }
-    return { day: day, blocks: JSON.parse(JSON.stringify(blocks)) };
+    return { day: day, blocks: AC.seed.resolveBlocks(blocks, AC.seed.programWeek(S()), S().settings) };
+  }
+
+  /* The current phase run (the last one without an end date). */
+  function currentRun(st) {
+    st = st || S();
+    var runs = st.phaseRuns || [];
+    for (var i = runs.length - 1; i >= 0; i--) if (!runs[i].endDate) return runs[i];
+    return runs[runs.length - 1] || null;
+  }
+
+  /* Day C indoor/outdoor picker: remember the choice and swap the block before it starts. */
+  function chooseVariant(vid) {
+    var a = AS(), blk = currentBlock();
+    if (!a || !blk || !blk.variants) return;
+    AC.store.update(function (s) {
+      s.settings[blk.variantKey] = vid;
+      var r = resolveDay(a.dayId, a.dayOptionId);
+      var fresh = r && r.blocks.filter(function (x) { return x.id === blk.id; })[0];
+      if (!fresh) return;
+      s.activeSession.blocks[s.activeSession.blockIndex] = fresh;
+      s.activeSession.block = initBlock(fresh, s.activeSession.sessionId);
+    });
+    emit();
+  }
+
+  /* A check-in: weight and waist (required), optional tape measurements, photo ids.
+     Weight and waist also go into metrics, so every chart keeps one continuous line. */
+  function saveCheckin(c, runId) {
+    var id = U.uid('ci'), today = U.todayKey(), st = S();
+    AC.store.update(function (s) {
+      var rec = { id: id, date: today, phaseRunId: runId || (currentRun(s) || {}).id || null,
+        weight: c.weight, waist: c.waist, chest: c.chest || null, arm: c.arm || null, thigh: c.thigh || null, hips: c.hips || null,
+        weightUnit: s.settings.bodyweightUnit, waistUnit: s.settings.waistUnit, photos: c.photos || {} };
+      s.checkins.push(rec);
+      [['weight', c.weight, s.settings.bodyweightUnit], ['waist', c.waist, s.settings.waistUnit],
+       ['chest', c.chest, s.settings.waistUnit], ['arm', c.arm, s.settings.waistUnit],
+       ['thigh', c.thigh, s.settings.waistUnit], ['hips', c.hips, s.settings.waistUnit]].forEach(function (m) {
+        if (typeof m[1] !== 'number') return;
+        s.metrics = s.metrics.filter(function (x) { return !(x.type === m[0] && x.date === today && x.source === 'checkin'); });
+        s.metrics.push({ id: U.uid('m'), date: today, type: m[0], value: m[1], unit: m[2], source: 'checkin', scanId: null });
+      });
+      s.metrics.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    });
+    return id;
+  }
+
+  /* Start Phase 1 or 2 at week 1, today. Only the program and schedule change: sessions,
+     lifts, records, metrics and settings all stay. A session in progress is ended like
+     Discard, so sets already logged stay in history. */
+  function startPhase(phaseId, checkin) {
+    if (AS()) abandon();
+    var today = U.todayKey(), runId = U.uid('run');
+    AC.store.update(function (s) {
+      (s.phaseRuns || []).forEach(function (r) { if (!r.endDate) r.endDate = today; });
+      s.program = AC.seed.buildPhase(phaseId);
+      s.schedule.programStartDate = today;
+      s.schedule.nextRequiredIndex = 0;
+      s.schedule.cycleCount = 0;
+      s.phaseRuns.push({ id: runId, phaseId: phaseId, startDate: today, endDate: null, startCheckinId: null });
+    });
+    if (checkin) {
+      var cid = saveCheckin(checkin, runId);
+      AC.store.update(function (s) { s.phaseRuns[s.phaseRuns.length - 1].startCheckinId = cid; });
+    }
+    emit();
+    return runId;
   }
 
   function start(dayId, optionId, opts) {
@@ -3044,6 +3563,7 @@ AC.engine = (function () {
       notes: a.wrapup ? (a.wrapup.notes || '') : '',
       blockResults: a.blockResults.slice(),
       substitutions: a.substitutions,
+      phaseRunId: (currentRun() || {}).id || null,
       totals: {}, beatLast: []
     };
   }
@@ -3842,6 +4362,7 @@ AC.engine = (function () {
 
   return {
     onChange: onChange, start: start, resume: resume, abandon: abandon, complete: complete,
+    chooseVariant: chooseVariant, startPhase: startPhase, saveCheckin: saveCheckin, currentRun: currentRun,
     currentBlock: currentBlock, currentSlot: currentSlot, exerciseOf: exerciseOf,
     suggestLoad: suggestLoad, makeDraft: makeDraft, targetReps: targetReps,
     increment: increment, unitFor: unitFor, kbUp: kbUp, kbDown: kbDown, kbSnap: kbSnap,
@@ -4322,8 +4843,13 @@ AC.screens = (function () {
     }
     return el;
   }
+  /* A day as it runs this week (Phase 2 prescriptions change by week; Day C picks indoor/outdoor). */
   function dayById(id) {
-    return S().program.days.filter(function (d) { return d.id === id; })[0];
+    var st = S(), d = st.program.days.filter(function (x) { return x.id === id; })[0];
+    if (!d) return d;
+    var c = {}; for (var k in d) c[k] = d[k];
+    c.blocks = AC.seed.resolveBlocks(d.blocks, AC.seed.programWeek(st), st.settings);
+    return c;
   }
   function nextDay() {
     var st = S();
@@ -4414,7 +4940,9 @@ AC.screens = (function () {
     }
     if (b.mode === 'rounds') return { title: b.label, sub: items.map(ex).join(' + ') + ' · ' + b.rounds + ' rounds' };
     if (b.mode === 'emom') return { title: b.label, sub: 'EMOM ' + b.emom.minutes + ' min · ' + b.emom.repsPerMinute + ' ' + ex(items[0] || {}).toLowerCase() };
-    if (b.mode === 'interval') return { title: b.label, sub: b.interval.effortsMin + '–' + b.interval.effortsMax + ' × ' + b.interval.effortSecondsMin + '–' + b.interval.effortSecondsMax + ' s' };
+    if (b.mode === 'interval') return { title: b.label, sub: b.interval.effortsMin + '–' + b.interval.effortsMax + ' × ' +
+      (b.interval.effortSecondsMin === b.interval.effortSecondsMax ? b.interval.effortSecondsMin : b.interval.effortSecondsMin + '–' + b.interval.effortSecondsMax) + ' s' +
+      (b.variant && b.variant !== 'track' ? ' · ' + b.variants.filter(function (v) { return v.id === b.variant; })[0].label.toLowerCase() : '') };
     if (b.mode === 'checklist') return { title: b.label, sub: items.map(ex).join(', ') };
     return { title: b.label, sub: b.instructions || '' };
   }
@@ -4464,7 +4992,8 @@ AC.screens = (function () {
     var weekNo = Math.floor(U.daysBetween(st.schedule.programStartDate, U.todayKey()) / 7) + 1;
 
     el.appendChild(h('div', { class: 'screen-head' },
-      h('div', { class: 'meta-strong', text: 'Athletic Cut · Week ' + U.clamp(weekNo, 1, 99) + ' of ' + st.program.weeks }),
+      h('div', { class: 'meta-strong', text: 'Phase ' + phaseInfo(AC.seed.phaseOf(st.program)).number + ' · Week ' + U.clamp(weekNo, 1, 99) + ' of ' + st.program.weeks,
+        title: st.program.name }),
       ui.iconBtn('i-settings', 'Settings', function () { AC.router.go('more'); })));
 
     var body = h('div', { class: 'stack scroll' });
@@ -4481,6 +5010,16 @@ AC.screens = (function () {
       h('div', { class: 'meta', text: restedToday ? 'You trained today · next up' : 'Today' }),
       h('h1', { class: 'home-title', text: 'Day ' + day.letter + ' · ' + day.label })));
     body.appendChild(weekStrip(st));
+    if (weekNo > st.program.weeks) {
+      body.appendChild(h('section', { class: 'card stack-2', 'aria-label': 'Phase complete' },
+        h('b', { text: st.program.name + ' is done: ' + st.program.weeks + ' weeks.' }),
+        h('p', { class: 'meta', text: 'Start the next phase, or run this one again. Your history stays.' }),
+        ui.btn('Start a phase', function () { AC.router.go('phase'); }, 'primary', { small: true })));
+    }
+    if (photosDue(st)) {
+      body.appendChild(h('button', { class: 'chip chip--quiet', type: 'button', onclick: function () { AC.router.go('checkin'); } },
+        h('span', { text: 'Progress photos due' }), use('i-right', 'ico')));
+    }
 
     var bw = AC.stats.bodyweight7();
     var waist = AC.stats.latest('waist');
@@ -4664,6 +5203,8 @@ AC.screens = (function () {
     var body = h('div', { class: 'runner-body' });
     if (atWrap) body.appendChild(wrapup());
     else if (!blk) body.appendChild(h('div', { text: 'Nothing scheduled in this session.' }));
+    if (!atWrap && blk && blk.variants) { var vp = variantPicker(blk, b, a); if (vp) body.appendChild(vp); }
+    if (atWrap || !blk) {}
     else if (blk.mode === 'checklist') body.appendChild(checklistBlock(blk, b));
     else if (blk.mode === 'emom') body.appendChild(emomBlock(blk, b));
     else if (blk.mode === 'interval') body.appendChild(intervalBlock(blk, b));
@@ -4937,6 +5478,9 @@ AC.screens = (function () {
     if (blk.mode === 'carry' || slot.logMetric === 'distance') {
       wrap.appendChild(ui.stepper({ label: 'Distance', unit: 'm', value: draft.distanceM || 40, step: 5,
         min: 5, max: 400, size: 'sm', onChange: function (v) { AC.engine.setDraft('distanceM', v, slot.id); } }));
+    } else if (slot.logMetric === 'time' && slot.timeLog === 'measured') {
+      wrap.appendChild(ui.stepper({ label: 'Time', unit: 's', value: draft.seconds || 18, step: 1,
+        min: 1, max: 120, size: 'sm', onChange: function (v) { AC.engine.setDraft('seconds', v, slot.id); } }));
     } else if (slot.logMetric === 'time') {
       wrap.appendChild(ui.stepper({ label: 'Hold', unit: 's', value: draft.seconds || 30, step: 5,
         min: 5, max: 600, size: 'sm', onChange: function (v) { AC.engine.setDraft('seconds', v, slot.id); } }));
@@ -4969,7 +5513,7 @@ AC.screens = (function () {
       wrap.appendChild(hd);
     }
     if (resting && restCollapsed) band.appendChild(restBar());
-    if (slot.logMetric === 'time' && !resting && !holding) {
+    if (slot.logMetric === 'time' && slot.timeLog !== 'measured' && !resting && !holding) {
       band.appendChild(ui.btn('Start ' + (draft.seconds || 30) + 's hold', function () {
         AC.engine.startHold(draft.seconds || 30);
       }, 'ghost'));
@@ -5258,7 +5802,7 @@ AC.screens = (function () {
     wrap.appendChild(exHead(slot, b.effortSeconds + ' s · walk back · ' + b.restSeconds + ' s rest'));
     if (b.status === 'ready') {
       wrap.appendChild(h('div', { class: 'ex-note', text: blk.instructions }));
-      wrap.appendChild(h('div', { class: 'row' },
+      wrap.appendChild(h('div', { style: 'display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s-2)' },
         ui.stepper({ label: 'Effort', unit: 's', value: b.effortSeconds, step: 5, min: 5, max: 60, size: 'xs',
           onChange: function (v) { AC.engine.setBlockField('effortSeconds', v); } }),
         ui.stepper({ label: 'Rest', unit: 's', value: b.restSeconds, step: 15, min: 30, max: 300, size: 'xs',
@@ -5971,6 +6515,9 @@ AC.screens = (function () {
       onChange: function (v) { progRange = +v; render(); } })));
     var body = h('div', { class: 'stack scroll' });
     body.appendChild(ui.btn('Export weekly report', function () { weeklyReport(0); }, 'outline', { small: true }));
+    body.appendChild(h('button', { class: 'listrow', type: 'button', onclick: function () { AC.router.go('photos'); } },
+      h('div', { class: 'listrow-main' }, h('div', { class: 'listrow-title', text: 'Progress photos' }),
+        h('div', { class: 'listrow-sub', text: 'First vs latest, front, side and back' })), use('i-right')));
 
     /* bodyweight */
     var roll = AC.stats.rolling7('weight').filter(function (r) { return progRange > 3000 || r.x >= xMin; });
@@ -6073,6 +6620,8 @@ AC.screens = (function () {
     var st = S();
     var el = screen({ title: 'Body', nav: true });
     var body = h('div', { class: 'stack scroll' });
+    var svn = startVsNowCard(st);
+    if (svn) body.appendChild(svn);
     var lastW = AC.stats.latest('weight');
     var w = lastW ? lastW.value : 199.7;
     var wStep = ui.stepper({ label: 'Today · fasted weight', unit: st.settings.bodyweightUnit,
@@ -6225,6 +6774,311 @@ AC.screens = (function () {
   }
 
   /* ---------- history ---------- */
+  /* ---------- phases, check-ins, progress photos ---------- */
+  function phaseInfo(id) { return AC.seed.PHASES.filter(function (p) { return p.id === id; })[0] || AC.seed.PHASES[0]; }
+  function runLabel(r) {
+    var p = phaseInfo(r.phaseId);
+    return 'Phase ' + p.number + ' · ' + U.fmtDate(r.startDate) + (r.endDate ? '–' + U.fmtDate(r.endDate) : ', now');
+  }
+  function backBtn(to) { return ui.iconBtn('i-close', 'Back', function () { AC.router.go(to || 'more'); }); }
+
+  /* Start a phase: pick one, then the check-in, then confirm. */
+  function phaseScreen() {
+    var st = S(), cur = AC.seed.phaseOf(st.program);
+    var el = screen({ title: 'Start a phase', nav: true, action: backBtn('more') });
+    var body = h('div', { class: 'stack scroll' });
+    var run = AC.engine.currentRun();
+    body.appendChild(h('p', { style: 'color:var(--text-2)', text: 'Now: Phase ' + phaseInfo(cur).number + ' · ' + st.program.name + ', week ' +
+      AC.seed.programWeek(st) + ' of ' + st.program.weeks + (run ? ' (since ' + U.fmtDateLong(run.startDate) + ')' : '') + '.' }));
+    var pick = phaseScreen.pick || (cur === 'phase-1' ? 'phase-2' : 'phase-1');
+    var list = h('div', { class: 'stack-2', role: 'radiogroup', 'aria-label': 'Phase' });
+    AC.seed.PHASES.forEach(function (p) {
+      var on = p.id === pick;
+      list.appendChild(h('button', { class: 'card phasecard' + (on ? ' is-on' : ''), type: 'button', role: 'radio', 'aria-checked': on ? 'true' : 'false',
+        onclick: function () { phaseScreen.pick = p.id; render(); } },
+        h('div', { class: 'phasecard-head' }, h('b', { text: 'Phase ' + p.number + ' · ' + p.name }), h('span', { class: 'meta', text: p.weeks + ' weeks' })),
+        h('div', { class: 'listrow-sub', text: p.summary })));
+    });
+    body.appendChild(list);
+    body.appendChild(h('p', { class: 'hint', text: 'Starts today at week 1. Your history, lifts, records, body metrics, photos and settings all stay. A check-in comes first: weight, waist, optional measurements and photos.' }));
+    body.appendChild(h('div', { class: 'actions' }, ui.btn('Continue to check-in', function () { AC.router.go('checkin', pick); }, 'primary')));
+    el.appendChild(body);
+    el.appendChild(navbar('more'));
+    return el;
+  }
+
+  var VIEWS = [['front', 'Front', 'Face the camera, arms relaxed at your sides.'],
+    ['side', 'Side', 'Turn side-on, arms forward.'],
+    ['back', 'Back', 'Back to the camera, arms relaxed.']];
+
+  /* Check-in: required weight + waist, optional tape, three photos. With a phase id it
+     starts that phase; without, it's the weekly check-in. */
+  function checkinScreen(phaseId) {
+    var st = S(), su = st.settings;
+    var starting = phaseId === 'phase-1' || phaseId === 'phase-2';
+    var p = starting ? phaseInfo(phaseId) : null;
+    var el = screen({ title: starting ? 'Check-in · Phase ' + p.number : 'Weekly check-in', nav: true, action: backBtn(starting ? 'phase' : 'body') });
+    var body = h('div', { class: 'stack scroll' });
+    var lastW = AC.stats.latest('weight'), lastWa = AC.stats.latest('waist');
+    var d = checkinScreen.draft;
+    if (!d || d.key !== (phaseId || 'weekly')) {
+      d = checkinScreen.draft = { key: phaseId || 'weekly', weight: lastW ? lastW.value : null, waist: lastWa ? lastWa.value : null,
+        chest: null, arm: null, thigh: null, hips: null, photos: {} };
+    }
+    body.appendChild(h('p', { style: 'color:var(--text-2)', text: starting
+      ? 'Your starting point for Phase ' + p.number + '. Weigh in fasted, measure the waist at the navel.'
+      : 'Same spot, same light, phone at chest height.' }));
+    function step(key, label, unit, min, max, stepv, optional) {
+      var has = typeof d[key] === 'number';
+      var wrap = h('div', { class: 'stack-2' });
+      if (optional && !has) {
+        wrap.appendChild(h('button', { class: 'chip', type: 'button', text: '+ ' + label,
+          onclick: function () { var l = AC.stats.latest(key); d[key] = l ? l.value : (key === 'arm' ? 14 : key === 'chest' ? 40 : key === 'thigh' ? 23 : 38); render(); } }));
+        return wrap;
+      }
+      wrap.appendChild(ui.stepper({ label: label + (optional ? ' (optional)' : ''), unit: unit, value: has ? d[key] : (key === 'weight' ? 199.7 : 32.3),
+        step: stepv, decimals: 1, min: min, max: max, size: optional ? 'xs' : 'sm', onChange: function (v) { d[key] = v; } }));
+      if (!has) d[key] = key === 'weight' ? 199.7 : 32.3;
+      return wrap;
+    }
+    body.appendChild(h('div', { class: 'card stack-2' },
+      step('weight', 'Weight, fasted', su.bodyweightUnit, 60, 500, 0.2),
+      step('waist', 'Waist at navel', su.waistUnit, 15, 80, 0.1)));
+    body.appendChild(h('div', { class: 'stack-2' }, h('div', { class: 'cap', text: 'Measurements (optional)' }),
+      h('div', { class: 'chips' }, step('chest', 'Chest', su.waistUnit, 20, 80, 0.1, true), step('arm', 'Arm', su.waistUnit, 6, 30, 0.1, true),
+        step('thigh', 'Thigh', su.waistUnit, 10, 50, 0.1, true), step('hips', 'Hips', su.waistUnit, 20, 80, 0.1, true))));
+
+    /* photos */
+    body.appendChild(h('div', { class: 'cap', text: 'Photos (optional)' }));
+    var grid = h('div', { class: 'photoslots' });
+    VIEWS.forEach(function (v) {
+      var got = d.photos[v[0]];
+      var input = h('input', { type: 'file', accept: 'image/*', capture: 'user', class: 'vh', 'aria-label': 'Take the ' + v[1].toLowerCase() + ' photo' });
+      input.addEventListener('change', function () {
+        var f = input.files && input.files[0];
+        if (!f) return;
+        AC.photos.compress(f).then(function (c) {
+          if (d.photos[v[0]] && d.photos[v[0]].url) URL.revokeObjectURL(d.photos[v[0]].url);
+          d.photos[v[0]] = { blob: c.blob, w: c.w, h: c.h, url: URL.createObjectURL(c.blob) };
+          render();
+        }, function (e) { ui.toast(e.message, 5000); });
+      });
+      grid.appendChild(h('label', { class: 'photoslot' + (got ? ' has' : '') },
+        got ? h('img', { src: got.url, alt: v[1] + ' photo, taken now' }) : silhouette(v[0]),
+        h('span', { class: 'photoslot-cap' }, h('b', { text: v[1] }), h('span', { text: got ? 'Retake' : v[2] })),
+        input));
+    });
+    body.appendChild(grid);
+    body.appendChild(h('p', { class: 'hint', text: 'Photos never leave this phone. Same spot, same light, phone at chest height.' }));
+
+    function save() {
+      if (typeof d.weight !== 'number' || typeof d.waist !== 'number') { ui.toast('Weight and waist are needed for the check-in.'); return; }
+      var today = U.todayKey(), wk = AC.seed.programWeek(S());
+      function finish(ids) {
+        var c = { weight: d.weight, waist: d.waist, chest: d.chest, arm: d.arm, thigh: d.thigh, hips: d.hips, photos: ids };
+        var runId;
+        if (starting) runId = AC.engine.startPhase(phaseId, c);
+        else AC.engine.saveCheckin(c);
+        checkinScreen.draft = null; phaseScreen.pick = null;
+        ui.toast(starting ? 'Phase ' + p.number + ' started. Week 1 is today.' : 'Check-in saved.');
+        AC.router.go(starting ? 'home' : 'body');
+        render();
+      }
+      var views = Object.keys(d.photos);
+      if (!views.length) { finish({}); return; }
+      var run = AC.engine.currentRun(), ids = {}, pid = starting ? 'pending' : (run && run.id);
+      var bw = d.weight;
+      views.reduce(function (pr, k) {
+        return pr.then(function () {
+          var ph = d.photos[k], id = U.uid('ph');
+          return AC.photos.put({ id: id, view: k, date: today, createdAt: new Date().toISOString(), phaseId: starting ? phaseId : AC.seed.phaseOf(S().program),
+            week: starting ? 1 : wk, phaseRunId: pid, weight: bw, weightUnit: su.bodyweightUnit, blob: ph.blob, w: ph.w, h: ph.h })
+            .then(function () { ids[k] = id; });
+        });
+      }, Promise.resolve()).then(function () {
+        finish(ids);
+        if (starting) {
+          var rid = AC.engine.currentRun().id;
+          AC.photos.all().then(function (list) {
+            list.filter(function (x) { return x.phaseRunId === 'pending'; }).forEach(function (x) { x.phaseRunId = rid; AC.photos.put(x); });
+          });
+        }
+      }, function (e) { ui.sheet({ title: 'Photo not saved', body: [h('p', { text: e.message })] }); });
+    }
+    var label = starting ? 'Start Phase ' + p.number + ' today' : 'Save check-in';
+    body.appendChild(h('div', { class: 'actions' }, ui.btn(label, function () {
+      if (!starting) { save(); return; }
+      ui.confirm({ title: 'Start Phase ' + p.number + ' today?',
+        message: 'Week 1 of ' + p.name + ' starts today.' + (S().activeSession ? ' The session in progress ends; sets you logged stay in history.' : '') +
+          ' Your history, lifts, records, body metrics, photos and settings all stay.',
+        confirmLabel: 'Start Phase ' + p.number }).then(function (ok) { if (ok) save(); });
+    }, 'primary')));
+    el.appendChild(body);
+    el.appendChild(navbar(starting ? 'more' : 'body'));
+    return el;
+  }
+
+  /* Placeholder figure for empty photo slots (never a real photo). */
+  function silhouette(view) {
+    var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('viewBox', '0 0 60 80'); s.setAttribute('aria-hidden', 'true'); s.setAttribute('class', 'sil');
+    s.innerHTML = view === 'side'
+      ? '<circle cx="31" cy="13" r="7"/><path d="M27 22h8c2 0 3 2 3 4l1 22h-4l-1 26h-5l-1-26-3-1z"/><path d="M33 27l9 8-2 2-8-6z"/>'
+      : '<circle cx="30" cy="13" r="7"/><path d="M21 22h18c2 0 3 2 3 4v22h-4l-2 26h-5l-1-24h-0l-1 24h-5l-2-26h-4V26c0-2 1-4 3-4z"/>';
+    return s;
+  }
+
+  /* Start vs now for one phase run (weight, waist, tape, photos). */
+  function startVsNow(st, runId) {
+    var runs = st.phaseRuns || [];
+    var run = runs.filter(function (r) { return r.id === runId; })[0] || AC.engine.currentRun(st);
+    if (!run) return null;
+    var end = run.endDate || '9999-12-31';
+    var ci = st.checkins.filter(function (c) { return c.id === run.startCheckinId; })[0];
+    function inRun(m) { return m.date >= run.startDate && m.date <= end; }
+    var rows = [];
+    [['weight', 'Weight', st.settings.bodyweightUnit], ['waist', 'Waist', st.settings.waistUnit], ['chest', 'Chest', st.settings.waistUnit],
+     ['arm', 'Arm', st.settings.waistUnit], ['thigh', 'Thigh', st.settings.waistUnit], ['hips', 'Hips', st.settings.waistUnit]].forEach(function (t) {
+      var ms = st.metrics.filter(function (m) { return m.type === t[0] && inRun(m); });
+      var start = ci && typeof ci[t[0]] === 'number' ? ci[t[0]] : (ms[0] ? ms[0].value : null);
+      var now = ms.length ? ms[ms.length - 1].value : null;
+      if (start === null && now === null) return;
+      rows.push({ type: t[0], label: t[1], unit: t[2], start: start, now: now });
+    });
+    return { run: run, rows: rows };
+  }
+  function startVsNowCard(st) {
+    var runs = (st.phaseRuns || []).slice().reverse();
+    var sel = startVsNowCard.run || (AC.engine.currentRun(st) || {}).id;
+    var sv = startVsNow(st, sel);
+    if (!sv) return null;
+    var card = h('div', { class: 'card stack-2 svn' });
+    card.appendChild(h('div', { class: 'row', style: 'justify-content:space-between;align-items:baseline' },
+      h('b', { text: 'Start vs now' }), h('span', { class: 'meta', text: runLabel(sv.run) })));
+    if (runs.length > 1) {
+      card.appendChild(h('div', { class: 'chips', role: 'radiogroup', 'aria-label': 'Phase run' }, runs.map(function (r) {
+        return h('button', { class: 'chip chip--sm', type: 'button', role: 'radio', 'aria-checked': r.id === sv.run.id ? 'true' : 'false',
+          text: 'Phase ' + phaseInfo(r.phaseId).number + ' · ' + U.fmtDate(r.startDate), onclick: function () { startVsNowCard.run = r.id; render(); } });
+      })));
+    }
+    if (!sv.rows.length) card.appendChild(h('p', { class: 'hint', text: 'No weigh-ins in this run yet.' }));
+    var tbl = h('div', { class: 'svn-rows' });
+    sv.rows.forEach(function (r) {
+      var dlt = r.start !== null && r.now !== null ? r.now - r.start : null;
+      tbl.appendChild(h('div', { class: 'svn-row' },
+        h('span', { class: 'svn-l', text: r.label }),
+        h('span', { class: 'num', text: r.start === null ? '—' : r.start.toFixed(1) }),
+        h('span', { class: 'svn-arrow', 'aria-hidden': 'true', text: '→' }),
+        h('span', { class: 'num svn-now', text: r.now === null ? '—' : r.now.toFixed(1) + ' ' + r.unit }),
+        h('span', { class: 'num meta', text: dlt === null ? '' : (dlt > 0 ? '+' : dlt < 0 ? '−' : '±') + Math.abs(dlt).toFixed(1) })));
+    });
+    card.appendChild(tbl);
+    card.appendChild(h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' },
+      ui.btn('Compare photos', function () { AC.router.go('photos', sv.run.id); }, 'outline', { small: true }),
+      ui.btn('Weekly check-in', function () { AC.router.go('checkin'); }, 'ghost', { small: true })));
+    return card;
+  }
+
+  /* Photo compare: first vs latest with a wipe slider, a timeline per view, delete. */
+  function photosScreen(runId) {
+    var st = S();
+    var el = screen({ title: 'Progress photos', nav: true, action: backBtn('progress') });
+    var body = h('div', { class: 'stack scroll' });
+    var ps = photosScreen.state = photosScreen.state || { view: 'front', left: null, right: null, active: 'left', pos: 50 };
+    var run = (st.phaseRuns || []).filter(function (r) { return r.id === runId; })[0];
+    body.appendChild(ui.segmented({ value: ps.view, options: VIEWS.map(function (v) { return { id: v[0], label: v[1] }; }),
+      onChange: function (v) { ps.view = v; ps.left = ps.right = null; render(); } }));
+    if (run) body.appendChild(h('p', { class: 'meta', text: runLabel(run) + ' · ' }, h('button', { class: 'linkbtn', type: 'button', text: 'Show all phases',
+      onclick: function () { AC.router.go('photos'); } })));
+    var stage = h('div', { class: 'stack' });
+    body.appendChild(stage);
+    body.appendChild(h('p', { class: 'hint', text: 'Photos never leave this phone.' }));
+    el.appendChild(body);
+    el.appendChild(navbar('progress'));
+    AC.photos.all().then(function (all) {
+      var list = all.filter(function (p) { return p.view === ps.view && (!run || p.phaseRunId === run.id); });
+      if (!list.length) {
+        stage.appendChild(ui.empty('No ' + ps.view + ' photos yet.', 'Take photos', function () { AC.router.go('checkin'); }));
+        return;
+      }
+      var L = list.filter(function (p) { return p.id === ps.left; })[0] || list[0];
+      var R2 = list.filter(function (p) { return p.id === ps.right; })[0] || list[list.length - 1];
+      var wipe = h('div', { class: 'wipe', style: '--pos:' + ps.pos + '%' },
+        h('img', { class: 'wipe-b', src: AC.photos.url(R2), alt: 'Later photo, ' + U.fmtDateLong(R2.date) }),
+        h('img', { class: 'wipe-a', src: AC.photos.url(L), alt: 'Earlier photo, ' + U.fmtDateLong(L.date) }),
+        h('div', { class: 'wipe-bar', 'aria-hidden': 'true' }, h('span')));
+      var range = h('input', { type: 'range', min: 0, max: 100, value: ps.pos, class: 'wipe-range', 'aria-label': 'Compare: drag to show more of either photo' });
+      function setPos(v) { ps.pos = Math.max(0, Math.min(100, v)); wipe.style.setProperty('--pos', ps.pos + '%'); range.value = ps.pos; }
+      range.addEventListener('input', function () { setPos(+range.value); });
+      function drag(e) { var r = wipe.getBoundingClientRect(); setPos((e.clientX - r.left) / r.width * 100); }
+      wipe.addEventListener('pointerdown', function (e) { wipe.setPointerCapture(e.pointerId); drag(e); });
+      wipe.addEventListener('pointermove', function (e) { if (wipe.hasPointerCapture(e.pointerId)) drag(e); });
+      stage.appendChild(wipe);
+      stage.appendChild(range);
+      function cap(p, side) {
+        var dw = side === 'right' && L.weight && p.weight ? p.weight - L.weight : null;
+        var on = ps.active === side;
+        return h('button', { class: 'photocap' + (on ? ' is-on' : ''), type: 'button', 'aria-pressed': on ? 'true' : 'false',
+          'aria-label': (side === 'left' ? 'Left photo' : 'Right photo') + ', ' + U.fmtDateLong(p.date) + '. Tap, then pick a week below to change it.',
+          onclick: function () { ps.active = side; render(); } },
+          h('b', { text: U.fmtDate(p.date) }),
+          h('span', { text: 'Phase ' + phaseInfo(p.phaseId).number + ' · Week ' + (p.week || 1) }),
+          h('span', { class: 'num', text: p.weight ? U.num(p.weight, 1) + ' ' + (p.weightUnit || 'lb') + (dw !== null ? ' (' + (dw > 0 ? '+' : dw < 0 ? '−' : '±') + U.num(Math.abs(dw), 1) + ')' : '') : '' }));
+      }
+      stage.appendChild(h('div', { class: 'photocaps' }, cap(L, 'left'), cap(R2, 'right')));
+      var strip = h('div', { class: 'timeline', role: 'list', 'aria-label': 'Timeline' });
+      list.forEach(function (p) {
+        var on = p.id === L.id || p.id === R2.id;
+        strip.appendChild(h('button', { class: 'tl' + (on ? ' is-on' : ''), type: 'button', role: 'listitem',
+          'aria-label': 'Use ' + U.fmtDateLong(p.date) + ' for the ' + ps.active + ' photo',
+          onclick: function () { ps[ps.active] = p.id; render(); } },
+          h('img', { src: AC.photos.url(p), alt: '' }), h('span', { text: 'W' + (p.week || 1) + ' · ' + U.fmtDate(p.date) })));
+      });
+      stage.appendChild(strip);
+      var target = ps.active === 'left' ? L : R2;
+      stage.appendChild(ui.btn('Delete the ' + ps.active + ' photo (' + U.fmtDate(target.date) + ')', function () {
+        ui.confirm({ title: 'Delete this photo?', message: U.fmtDateLong(target.date) + ', ' + ps.view + '. This cannot be undone.', confirmLabel: 'Delete' })
+          .then(function (ok) {
+            if (!ok) return;
+            AC.photos.del(target.id).then(function () { ps.left = ps.right = null; ui.toast('Photo deleted.'); render(); });
+          });
+      }, 'ghost', { small: true }));
+    });
+    return el;
+  }
+
+  function photosDue(st) {
+    var last = null;
+    st.checkins.forEach(function (c) { if (c.photos && Object.keys(c.photos).length && (!last || c.date > last)) last = c.date; });
+    return !last || U.daysBetween(last, U.todayKey()) >= 7;
+  }
+
+  /* Day C picker: shown on a block with indoor/outdoor options until it starts. */
+  function variantPicker(blk, b, a) {
+    var started = a.entries.some(function (e) { return e.blockId === blk.id; }) || (b.checked && b.checked.length) ||
+      (b.status && b.status !== 'ready') || (b.effortIndex > 0);
+    if (started) return null;
+    return h('div', { class: 'stack-2 variantpick' }, h('div', { class: 'cap', text: 'Where are you training?' }),
+      ui.segmented({ value: blk.variant, options: blk.variants.map(function (v) { return { id: v.id, label: v.label }; }),
+        onChange: function (v) { AC.engine.chooseVariant(v); render(); } }));
+  }
+
+  function photosBackup() {
+    AC.photos.exportJSON().then(function (json) {
+      var n = (JSON.parse(json).photos || []).length;
+      if (!n) { ui.toast('No photos to back up yet.'); return; }
+      AC.io.download('athletic-cut-photos-' + U.todayKey() + '.json', json);
+      ui.toast(n + ' photo' + (n === 1 ? '' : 's') + ' saved to a separate file.', 4000);
+    }, function (e) { ui.toast('Photos backup failed. ' + (e.message || e), 5000); });
+  }
+  function photosRestore() {
+    AC.io.pickFile('application/json,.json').then(function (f) {
+      if (!f) return;
+      return AC.io.readText(f).then(function (t) { return AC.photos.importJSON(t); })
+        .then(function (n) { ui.toast(n + ' photo' + (n === 1 ? '' : 's') + ' restored.'); }, function (e) { ui.sheet({ title: 'Photos not restored', body: [h('p', { text: e.message })] }); });
+    });
+  }
+
   function history() {
     var st = S();
     var el = screen({ title: 'History', nav: true });
@@ -6426,6 +7280,11 @@ AC.screens = (function () {
     var body = h('div', { class: 'stack scroll' });
     function upd(fn) { AC.store.update(function (s) { fn(s.settings); }); }
     function group(title) { return h('h2', { class: 'grouptitle', text: title }); }
+    body.appendChild(group('Program'));
+    body.appendChild(h('button', { class: 'listrow', type: 'button', onclick: function () { AC.router.go('phase'); } },
+      h('div', { class: 'listrow-main' }, h('div', { class: 'listrow-title', text: 'Start a phase' }),
+        h('div', { class: 'listrow-sub', text: 'Now: Phase ' + phaseInfo(AC.seed.phaseOf(st.program)).number + ' · ' + st.program.name +
+          ', week ' + AC.seed.programWeek(st) + ' of ' + st.program.weeks + '. Restart Phase 1 or 2 at week 1.' })), use('i-right')));
     body.appendChild(group('Workout'));
     body.appendChild(h('div', { class: 'stack-2' }, h('span', { class: 'cap', text: 'Units' }),
       ui.segmented({ value: s2.loadUnit, options: [{ id: 'lb', label: 'lb' }, { id: 'kg', label: 'kg' }],
@@ -6496,6 +7355,12 @@ AC.screens = (function () {
     body.appendChild(h('button', { class: 'listrow', type: 'button', onclick: function () { doExport(true); } },
       h('div', { class: 'listrow-main' }, h('div', { class: 'listrow-title', text: 'Export with video clips' }),
         h('div', { class: 'listrow-sub', text: 'Much larger file' })), use('i-right')));
+    body.appendChild(h('button', { class: 'listrow', type: 'button', onclick: photosBackup },
+      h('div', { class: 'listrow-main' }, h('div', { class: 'listrow-title', text: 'Export photos backup' }),
+        h('div', { class: 'listrow-sub', text: 'Progress photos only, as their own file. The data export leaves them out.' })), use('i-right')));
+    body.appendChild(h('button', { class: 'listrow', type: 'button', onclick: photosRestore },
+      h('div', { class: 'listrow-main' }, h('div', { class: 'listrow-title', text: 'Import photos backup' }),
+        h('div', { class: 'listrow-sub', text: 'Adds the photos back; nothing else changes' })), use('i-right')));
     body.appendChild(h('button', { class: 'listrow', type: 'button', onclick: doImport },
       h('div', { class: 'listrow-main' }, h('div', { class: 'listrow-title', text: 'Import a backup' }),
         h('div', { class: 'listrow-sub', text: 'Replaces everything on this device' })), use('i-right')));
@@ -6571,6 +7436,9 @@ AC.screens = (function () {
       case 'nutrition': node = nutrition(); break;
       case 'history': node = history(); break;
       case 'more': node = settings(); break;
+      case 'phase': node = phaseScreen(); break;
+      case 'checkin': node = checkinScreen(cur.param); break;
+      case 'photos': node = photosScreen(cur.param); break;
       default: node = home();
     }
     return node;

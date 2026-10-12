@@ -63,9 +63,10 @@ const hdr = () => P.locator('.runner-head .cap').first().innerText();
 console.log('\nT01  static audit — single file, no network, no non-goals');
 {
   const src = fs.readFileSync(FILE, 'utf8');
-  // The app stays under 400 KB; the line drawings have their own 1.5 MB budget on top.
+  // The app stays under 460 KB (400 KB for v2, plus Phase 2, check-ins and photos); the line
+  // drawings have their own 1.5 MB budget on top.
   const code = src.replace(/AC\.drawings = \{[\s\S]*?\n\};\n/, '');
-  ok('app code under 400 KB (without the drawings)', Buffer.byteLength(code) < 400 * 1024, Math.round(Buffer.byteLength(code) / 1024) + ' KB');
+  ok('app code under 460 KB (without the drawings)', Buffer.byteLength(code) < 460 * 1024, Math.round(Buffer.byteLength(code) / 1024) + ' KB');
   ok('drawings add no more than 1.5 MB', Buffer.byteLength(src) - Buffer.byteLength(code) <= 1.5e6, Math.round((Buffer.byteLength(src) - Buffer.byteLength(code)) / 1024) + ' KB');
   ok('no <script src>', !/<script[^>]+src=/i.test(src));
   ok('no <link rel=stylesheet>', !/<link[^>]+stylesheet/i.test(src));
@@ -110,11 +111,18 @@ console.log('\nT02  boot, seed integrity, zero network requests');
   eq('Day E has 3 options', s.program.days[4].options.length, 3);
 
   const exCount = Object.keys(s.exercises).length;
-  ok('38 exercises seeded', exCount === 38, String(exCount));
-  const badCues = Object.values(s.exercises).filter(e => !(e.cues.length >= 3 && e.cues.length <= 5));
-  eq('every exercise has 3-5 cues', badCues.map(e => e.id), []);
-  const badMist = Object.values(s.exercises).filter(e => !(e.mistakes.length >= 1 && e.mistakes.length <= 2));
-  eq('every exercise has 1-2 mistakes', badMist.map(e => e.id), []);
+  ok('53 exercises seeded (38 Phase 1 + 15 for Phase 2 and indoor Day C)', exCount === 53, String(exCount));
+  // Phase 1 exercises keep the full cue spec. The 14 new ones carry only what the Phase 2
+  // coach review says, so they have at least one cue and at most two mistakes.
+  const NEW_EX = ['broad-jump', 'lateral-bound', 'kneeling-rollout', 'dead-bug', 'hanging-knee-raise', 'nordic-curl', 'slider-curl',
+    'copenhagen-plank', 'acceleration', 'flying-sprint', 'deceleration', 'planned-cut', 'spin-bike-sprint', 'rower-sprint', 'sled-push'];
+  const old38 = Object.values(s.exercises).filter(e => !NEW_EX.includes(e.id));
+  const badCues = old38.filter(e => !(e.cues.length >= 3 && e.cues.length <= 5));
+  eq('every Phase 1 exercise has 3-5 cues', badCues.map(e => e.id), []);
+  const badMist = old38.filter(e => !(e.mistakes.length >= 1 && e.mistakes.length <= 2));
+  eq('every Phase 1 exercise has 1-2 mistakes', badMist.map(e => e.id), []);
+  eq('every new exercise has at least one cue and at most two mistakes',
+    NEW_EX.filter(id => !s.exercises[id] || !s.exercises[id].cues.length || s.exercises[id].mistakes.length > 2), []);
   const missingFig = await page.evaluate(() =>
     Object.values(AC.store.get().exercises).filter(e => !AC.figures.F[e.mediaRef]).map(e => e.id));
   eq('every exercise has its own figure', missingFig, []);
@@ -569,14 +577,14 @@ console.log('\nT10  charts, library, accessibility');
 
   await page.evaluate(() => AC.router.go('library'));
   await page.waitForSelector('.listrow');
-  eq('library lists all 38', await page.locator('ul .listrow').count(), 38);
+  eq('library lists all 53', await page.locator('ul .listrow').count(), 53);
   await page.getByRole('radio', { name: 'hinge' }).click();
   const hinge = await page.locator('ul .listrow').count();
-  eq('hinge filter narrows to 4', hinge, 4);
+  eq('hinge filter narrows to 6', hinge, 6);
   await page.getByRole('searchbox').fill('row');
   await page.getByRole('radio', { name: 'All' }).first().click();
   await page.getByRole('searchbox').fill('row');
-  eq('search "row" finds 2', await page.locator('ul .listrow').count(), 2);
+  eq('search "row" finds 3', await page.locator('ul .listrow').count(), 3);
 
   const unnamed = await page.evaluate(() => {
     const out = [];
@@ -918,7 +926,7 @@ console.log('\nT12  design invariants');
     const HANG = ['pull-up', 'weighted-pull-up', 'dead-hang', 'hanging-leg-raise'];
     const out = { missing: [], still: [], same: [], floor: [] };
     for (const id in ex) {
-      if (ex[id].isCustom) continue;
+      if (ex[id].isCustom || /^generic-/.test(ex[id].mediaRef)) continue;
       const d = D[ex[id].mediaRef];
       if (!d || !['a', 'b'].every(k => d[k] && d[k].i && d[k].i.length > 500 && d[k].t.length === 4)) { out.missing.push(id); continue; }
       if (!['a', 'b'].includes(d.s)) out.still.push(id);
@@ -954,10 +962,12 @@ console.log('\nT12  design invariants');
       const still = fig.classList.contains('still-a') ? 'a' : 'b';
       const shown = getComputedStyle(fig.querySelector('.f0')).opacity === '1' ? 'a' : 'b';
       const hidden = getComputedStyle(fig.querySelector(still === 'a' ? '.f1' : '.f0')).opacity;
-      return fig.classList.contains('drawn') && still === shown && hidden === '0';
+      return !fig.classList.contains('drawn') || (still === shown && hidden === '0');
     });
   });
   ok('library thumbnails show each drawing\'s still frame, the one that names the movement', thumbFrame.length >= 38 && thumbFrame.every(Boolean), JSON.stringify(thumbFrame));
+  const awaiting = await page.evaluate(() => Object.values(AC.store.get().exercises).filter(e => /^generic-/.test(e.mediaRef)).map(e => e.id).sort());
+  eq('the 15 new exercises use the stick fallback until their drawings exist', awaiting.length, 15);
   {
     // Reduced motion: the demo holds the still frame instead of animating.
     const rm = await newPage({ reducedMotion: 'reduce' });
@@ -1055,7 +1065,7 @@ console.log('\nT13  the fixes did not break the happy paths');
     const s = AC.store.get();
     return [s.program.days.length, s.schedule.nextRequiredIndex, Object.keys(s.exercises).length];
   });
-  eq('a first boot still seeds everything', fresh, [5, 0, 38]);
+  eq('a first boot still seeds everything', fresh, [5, 0, 53]);
 
   // Day E: the program allows 5-6 rounds off one bell.
   const kb = await page.evaluate(() => {
@@ -1435,7 +1445,8 @@ console.log('\nV2-01  a real v1 backup survives v2 with nothing lost');
     const st = await state(page);
     KEYS.filter(k => k !== 'settings').forEach(k => eq('import keeps every ' + k, st[k], v1[k]));
     eq('import keeps every v1 setting value (v2 only adds new ones)', Object.keys(v1.settings).map(k => st.settings[k]), Object.keys(v1.settings).map(k => v1.settings[k]));
-    eq('custom and seeded exercises are kept', Object.keys(st.exercises).sort(), Object.keys(v1.exercises).sort());
+    ok('custom and seeded exercises are kept', Object.keys(v1.exercises).every(k => JSON.stringify(st.exercises[k].cues) === JSON.stringify(v1.exercises[k].cues)));
+    eq('and only the new Phase 2 exercises are added', Object.keys(st.exercises).filter(k => !v1.exercises[k]).length, 15);
     await ctx.close();
   }
   /* b) the v1 blob already sitting in localStorage when v2 first opens */
@@ -1449,7 +1460,9 @@ console.log('\nV2-01  a real v1 backup survives v2 with nothing lost');
     KEYS.filter(k => k !== 'settings').forEach(k => eq('opening v2 on v1 data keeps every ' + k, st[k], raw[k]));
     eq('and every v1 setting value', Object.keys(raw.settings).map(k => st.settings[k]), Object.keys(raw.settings).map(k => raw.settings[k]));
     ok('new v2 settings arrive with defaults', st.settings.barWeightLb === 45 && Array.isArray(st.settings.platesLb) && Array.isArray(st.settings.favorites));
-    eq('the schema version is unchanged', st.schemaVersion, raw.schemaVersion);
+    eq('the schema moves from 1 to 2 (phases)', [raw.schemaVersion, st.schemaVersion], [1, 2]);
+    eq('the current run is recorded from the existing start date', st.phaseRuns.map(r => [r.phaseId, r.startDate, r.endDate]), [['phase-1', raw.schedule.programStartDate, null]]);
+    ok('a pre-migration copy is kept', await page.evaluate(() => !!localStorage.getItem('athletic-cut:v1:pre-migrate')));
     ok('home shows the stored history (3 sessions logged)', st.sessions.filter(s => s.status === 'complete').length === 3);
     await ctx.close();
   }
@@ -1697,7 +1710,7 @@ console.log('\nV2-08  lift history, editable past sets, weekly ring, More');
   ok('home shows a weekly ring with sessions this week', /of 4 sessions this week/.test(await page.locator('.tile--ring').getAttribute('aria-label')));
   await page.evaluate(() => AC.router.go('more'));
   await page.waitForSelector('.grouptitle');
-  eq('More is grouped', await page.evaluate(() => [...document.querySelectorAll('.grouptitle')].map(g => g.textContent)), ['Workout', 'Appearance', 'Data']);
+  eq('More is grouped', await page.evaluate(() => [...document.querySelectorAll('.grouptitle')].map(g => g.textContent)), ['Program', 'Workout', 'Appearance', 'Data']);
   ok('the report is called Export weekly report', await page.getByRole('button', { name: /^Export weekly report/ }).count() === 1);
   await ctx.close();
 }
@@ -1767,6 +1780,218 @@ console.log('\nV2-10  long stepper values fit (Body: fasted weight 199.7)');
     ok('the fasted weight reads 199.7 in full in ' + scheme, fit.some(f => f.text === '199.7' && f.fits), JSON.stringify(fit));
     await ctx.close();
   }
+}
+
+/* ---------------------------------------------------------------- V2-11 */
+console.log('\nV2-11  phases: start Phase 1 or 2 at week 1, nothing lost');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  // History from an earlier run: two weeks in, sessions, metrics, a PR.
+  await page.evaluate(() => {
+    const U = AC.util;
+    AC.store.update(s => {
+      s.schedule.programStartDate = U.addDays(U.todayKey(), -20);
+      s.phaseRuns[0].startDate = s.schedule.programStartDate;
+      s.schedule.nextRequiredIndex = 2;
+      for (let i = 0; i < 3; i++) {
+        const d = U.addDays(U.todayKey(), -14 + i * 3);
+        s.sessions.push({ id: 'old' + i, dayId: 'day-a', startedAt: d + 'T10:00:00.000Z', completedAt: d + 'T10:40:00.000Z', dateKey: d, status: 'complete',
+          entries: [{ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: 0, load: 245 + i * 5, loadUnit: 'lb', reps: 5, rpe: 8, isWarmup: false, completedAt: d + 'T10:15:00.000Z' }],
+          blockResults: [], totals: {}, beatLast: [] });
+        s.metrics.push({ id: 'mw' + i, date: d, type: 'weight', value: 199 - i, unit: 'lb', source: 'manual' });
+      }
+    });
+    AC.screens.render();
+  });
+  const before = await state(page);
+  await page.evaluate(() => AC.router.go('more'));
+  await page.getByRole('button', { name: /Start a phase/ }).click();
+  await page.getByRole('radio', { name: /Phase 2/ }).click();
+  await page.getByRole('button', { name: /Continue to check-in/ }).click();
+  ok('the check-in opens first', /Check-in · Phase 2/.test(await page.locator('.screen-title').innerText()));
+  await page.getByRole('button', { name: /^Start Phase 2 today/ }).click();
+  ok('starting asks to confirm', await page.locator('.sheet-title').innerText().then(t => /Start Phase 2 today\?/.test(t)));
+  await page.locator('.sheet .btn--danger').click();
+  await page.waitForSelector('.weekstrip');
+  const after = await state(page);
+  eq('Phase 2 is the program now', [after.program.id, after.program.phaseId], ['athletic-build', 'phase-2']);
+  eq('week 1, Day A, starting today', [after.schedule.programStartDate, after.schedule.nextRequiredIndex], [await page.evaluate(() => AC.util.todayKey()), 0]);
+  ok('home says Phase 2, week 1', /Phase 2 · Week 1 of 12/.test(await page.locator('.meta-strong').first().innerText()));
+  eq('every session is kept', after.sessions.map(s => s.id), before.sessions.map(s => s.id));
+  ok('every earlier metric is kept', before.metrics.every(m => after.metrics.some(x => x.id === m.id)));
+  eq('settings are untouched', after.settings, before.settings);
+  eq('the old run is closed and the new one recorded', after.phaseRuns.map(r => [r.phaseId, !!r.endDate]), [['phase-1', true], ['phase-2', false]]);
+  const ci = after.checkins[0];
+  ok('the check-in is saved and linked to the run', ci && ci.phaseRunId === after.phaseRuns[1].id && after.phaseRuns[1].startCheckinId === ci.id && typeof ci.weight === 'number' && typeof ci.waist === 'number');
+  ok('lift history stays continuous across runs', await page.evaluate(() => AC.stats.lastFor('trap-bar-deadlift') !== null));
+  // Phase 2 prescriptions change by week.
+  const p2 = await page.evaluate(() => {
+    const p = AC.store.get().program, R = (d, w, s) => AC.seed.resolveBlocks(p.days[d].blocks, w, s || {});
+    const main = w => { const b = R(0, w).find(b => b.id === 'p2a-main'); const it = b.items[0]; return [it.sets, it.repsTarget.min, it.rpeTarget, b.restSeconds]; };
+    return { w1: main(1), w4: main(4), w11: main(11), w12: main(12),
+      ham4: R(3, 4).find(b => b.id === 'p2d-ham').items[0].exerciseId, ham1: R(3, 1).find(b => b.id === 'p2d-ham').items[0].exerciseId,
+      c5: R(2, 5).find(b => b.id === 'p2c-speed').items.map(i => i.exerciseId),
+      c5in: R(2, 5, { speedMode: 'indoor' }).find(b => b.id === 'p2c-speed').items.map(i => i.exerciseId + ' ' + i.repsTarget.display),
+      core8: R(2, 8).find(b => b.id === 'p2c-core').items[1].exerciseId, swings: JSON.stringify(p).includes('kettlebell-swing') };
+  });
+  eq('week 1 main lift: 3 x 4 @ RPE 6-7, 2-3 min', p2.w1, [3, 4, 7, 150]);
+  eq('week 4 is lighter: 2 x 4 @ RPE 6, 2 min', p2.w4, [2, 4, 6, 120]);
+  eq('week 11: 3 x 2, 3 min', p2.w11, [3, 2, 8, 180]);
+  eq('week 12 benchmark: two triples', p2.w12, [2, 3, 8, 180]);
+  eq('Nordic curl in week 1, slider curl in the light weeks', [p2.ham1, p2.ham4], ['nordic-curl', 'slider-curl']);
+  eq('flying runs start in week 5', p2.c5, ['lateral-bound', 'acceleration', 'flying-sprint', 'planned-cut']);
+  ok('indoors, flys become spin bike sprints and accelerations stop at 15 m', p2.c5in.some(x => /^spin-bike-sprint/.test(x)) && p2.c5in.some(x => /^acceleration 2 x 15 m/.test(x)), JSON.stringify(p2.c5in));
+  eq('light weeks swap Copenhagen for a side plank', p2.core8, 'side-plank');
+  ok('no swing EMOM in the required Phase 2 days', !p2.swings);
+  // And back to Phase 1 any time.
+  await page.evaluate(() => AC.engine.startPhase('phase-1', { weight: 196, waist: 31.8 }));
+  const back = await state(page);
+  eq('Phase 1 can be restarted at week 1', [back.program.id, back.schedule.nextRequiredIndex, back.phaseRuns.length], ['athletic-cut', 0, 3]);
+  eq('still every session', back.sessions.length, before.sessions.length);
+  await ctx.close();
+}
+{
+  // A session in progress ends like Discard; its sets stay in history.
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const r = await page.evaluate(() => {
+    AC.engine.start('day-a');
+    AC.store.update(s => { s.activeSession.entries.push({ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: 0, load: 225, loadUnit: 'lb', reps: 5, rpe: 8, isWarmup: false, completedAt: new Date().toISOString() }); });
+    AC.engine.startPhase('phase-2', { weight: 195, waist: 31.5 });
+    const s = AC.store.get();
+    return [s.activeSession, s.sessions.length, s.sessions[0].status, s.sessions[0].entries.length];
+  });
+  eq('starting a phase mid-session keeps the logged set', r, [null, 1, 'abandoned', 1]);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-12 */
+console.log('\nV2-12  Day C indoor picker');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await page.evaluate(() => { AC.store.update(s => { s.schedule.nextRequiredIndex = 2; }); AC.engine.start('day-c'); AC.engine.nextBlock(); AC.router.go('session'); AC.screens.render(); });
+  await page.waitForSelector('.variantpick');
+  eq('the sprint block offers track, spin bike, rower and sled', await page.locator('.variantpick [role=radio]').allInnerTexts(), ['Track', 'Spin bike', 'Rower', 'Sled push']);
+  await page.getByRole('radio', { name: 'Spin bike' }).click();
+  const bike = await page.evaluate(() => { const b = AC.engine.currentBlock(); return [b.items[0].exerciseId, b.interval.effortsMin, b.interval.effortsMax, b.interval.effortSecondsDefault, b.interval.restSeconds, AC.store.get().settings.sprintMode]; });
+  eq('spin bike: 8-10 x 20 s, 90 s easy, choice remembered', bike, ['spin-bike-sprint', 8, 10, 20, 90, 'bike']);
+  const next = await page.evaluate(() => { AC.engine.abandon(); AC.engine.start('day-c'); return AC.store.get().activeSession.blocks.find(b => b.id === 'c-sprints').items[0].exerciseId; });
+  eq('the next Day C starts on the spin bike', next, 'spin-bike-sprint');
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.screens.render(); });
+  await page.getByRole('radio', { name: 'Sled push' }).click();
+  const sled = await page.evaluate(() => { const b = AC.engine.currentBlock(), it = b.items[0]; return [b.mode, it.exerciseId, it.loadType, it.logMetric, it.sets, b.restSeconds]; });
+  eq('sled push: 6-8 x 15 m, 90-120 s rest, logged as load + time', sled, ['straight-sets', 'sled-push', 'sled', 'time', 6, 105]);
+  const ui2 = await page.evaluate(() => [...document.querySelectorAll('.herocard .cap')].map(c => c.textContent));
+  const holdBtn = await page.evaluate(() => /Start \d+s hold/.test(document.body.innerText));
+  ok('the sled screen asks for load and time per push (no hold timer)', ui2.some(t => /^Load/.test(t)) && ui2.some(t => /^Time/.test(t)) && !holdBtn, JSON.stringify(ui2));
+  const logged = await page.evaluate(() => { AC.engine.setDraft('load', 180); AC.engine.setDraft('seconds', 17); AC.engine.logSet();
+    const e = AC.store.get().activeSession.entries.slice(-1)[0]; return [e.exerciseId, e.load, e.seconds]; });
+  eq('a push logs its load and time', logged, ['sled-push', 180, 17]);
+  await page.evaluate(() => { AC.engine.abandon(); AC.engine.startPhase('phase-2', { weight: 195, waist: 31.5 }); AC.store.update(s => { s.schedule.programStartDate = AC.util.addDays(AC.util.todayKey(), -28); s.schedule.nextRequiredIndex = 2; });
+    AC.engine.start('day-c'); AC.engine.nextBlock(); AC.router.go('session'); AC.screens.render(); });
+  await page.waitForSelector('.variantpick');
+  eq('Phase 2 offers outdoors, indoors with the bike, indoors with the sled', await page.locator('.variantpick [role=radio]').allInnerTexts(), ['Outdoors', 'Indoors · bike', 'Indoors · sled']);
+  await page.getByRole('radio', { name: 'Indoors · bike' }).click();
+  const p2 = await page.evaluate(() => AC.engine.currentBlock().items.map(i => i.exerciseId));
+  eq('Phase 2 week 5 indoors: bounds, short accelerations, bike sprints, cuts', p2, ['lateral-bound', 'acceleration', 'spin-bike-sprint', 'planned-cut']);
+  await page.getByRole('radio', { name: 'Indoors · sled' }).click();
+  const p2s = await page.evaluate(() => AC.engine.currentBlock().items.map(i => i.exerciseId));
+  eq('with the sled, sled pushes replace the bike sprints (never both)', p2s, ['lateral-bound', 'acceleration', 'sled-push', 'planned-cut']);
+  const w1s = await page.evaluate(() => AC.seed.resolveBlocks(AC.store.get().program.days[2].blocks, 1, { speedMode: 'sled' }).find(b => b.id === 'p2c-speed').items.map(i => i.exerciseId));
+  ok('weeks without flying runs get no sled pushes either', !w1s.includes('sled-push') && !w1s.includes('spin-bike-sprint'), JSON.stringify(w1s));
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-13 */
+console.log('\nV2-13  check-in and start vs now');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await page.evaluate(() => AC.engine.startPhase('phase-2', { weight: 198.4, waist: 32.1, arm: 15.2 }));
+  await page.evaluate(() => { const U = AC.util; AC.store.update(s => { s.metrics.push({ id: 'later', date: U.todayKey(), type: 'weight', value: 196.0, unit: 'lb', source: 'manual' }); }); AC.router.go('body'); AC.screens.render(); });
+  await page.waitForSelector('.svn');
+  const rows = await page.evaluate(() => [...document.querySelectorAll('.svn-row')].map(r => r.innerText.replace(/\s+/g, ' ').trim()));
+  ok('start vs now shows weight from the phase check-in to the latest', rows.some(r => /^Weight 198\.4 → 196\.0 lb −2\.4$/.test(r)), JSON.stringify(rows));
+  ok('and the waist and the optional arm measurement', rows.some(r => /^Waist 32\.1/.test(r)) && rows.some(r => /^Arm 15\.2/.test(r)), JSON.stringify(rows));
+  ok('past runs can be picked', await page.locator('.svn [role=radio]').count() === 2);
+  await page.locator('.svn [role=radio]').nth(1).click();
+  ok('picking the earlier run shows its own dates', /Phase 1/.test(await page.locator('.svn .meta').first().innerText()));
+  // the weekly check-in needs weight and waist; tape is optional
+  await page.evaluate(() => { AC.router.go('checkin'); AC.screens.render(); });
+  ok('the weekly check-in has front, side and back slots with pose guides', (await page.locator('.photoslot').count()) === 3 && /arms forward/.test(await page.locator('.photoslots').innerText()));
+  await page.getByRole('button', { name: /Save check-in/ }).click();
+  const s = await state(page);
+  eq('a weekly check-in is saved', s.checkins.length, 2);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-14 */
+console.log('\nV2-14  progress photos');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  // A placeholder image (a grey silhouette), never a real photo.
+  const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 600; c.height = 800; const g = c.getContext('2d');
+    g.fillStyle = '#888'; g.fillRect(0, 0, 600, 800); g.fillStyle = '#444'; g.beginPath(); g.arc(300, 150, 70, 0, 7); g.fill(); g.fillRect(200, 240, 200, 400); return c.toDataURL('image/png').split(',')[1]; });
+  await page.evaluate(() => { AC.router.go('checkin'); AC.screens.render(); });
+  for (const v of ['front', 'side', 'back']) {
+    await page.locator('.photoslot input[type=file]').nth(['front', 'side', 'back'].indexOf(v)).setInputFiles({ name: v + '.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+    await page.waitForFunction(i => document.querySelectorAll('.photoslot img').length > i, ['front', 'side', 'back'].indexOf(v));
+  }
+  await page.getByRole('button', { name: /Save check-in/ }).click();
+  await page.waitForFunction(() => location.hash.includes('body'));
+  const stored = await page.evaluate(() => AC.photos.all().then(l => l.map(p => [p.view, p.blob.type, Math.max(p.w, p.h) <= 1280]).sort()));
+  eq('three photos stored as JPEG, long edge 1280 or less', stored, [['back', 'image/jpeg', true], ['front', 'image/jpeg', true], ['side', 'image/jpeg', true]]);
+  ok('photos are not in localStorage', await page.evaluate(() => !/data:image|blob:/.test(localStorage.getItem('athletic-cut:v1'))));
+  await page.reload();
+  eq('they survive a reload', await page.evaluate(() => AC.photos.all().then(l => l.length)), 3);
+  // A later set, a week on, so first vs latest has two ends.
+  await page.evaluate(async () => {
+    const l = await AC.photos.all();
+    for (const p of l) await AC.photos.put(Object.assign({}, p, { id: p.id + '-old', date: AC.util.addDays(p.date, -7), createdAt: '2000-01-01', week: 1, weight: 200.2 }));
+  });
+  await page.evaluate(() => { AC.router.go('photos'); AC.screens.render(); });
+  await page.waitForSelector('.wipe');
+  const cmp = await page.evaluate(() => [document.querySelector('.wipe-a').alt, document.querySelector('.wipe-b').alt, document.querySelectorAll('.timeline .tl').length]);
+  ok('compare defaults to first (left) vs latest (right)', /Earlier/.test(cmp[0]) && /Later/.test(cmp[1]) && cmp[2] === 2, JSON.stringify(cmp));
+  ok('the later photo shows the weight change', /\(−/.test(await page.locator('.photocap').nth(1).innerText()));
+  await page.locator('.wipe-range').fill('20');
+  ok('the slider moves the wipe', await page.evaluate(() => document.querySelector('.wipe').style.getPropertyValue('--pos') === '20%'));
+  ok('the privacy line is on the screen', /Photos never leave this phone/.test(await page.locator('.screen').innerText()));
+  await page.getByRole('button', { name: /^Delete the left photo/ }).click();
+  await page.locator('.sheet .btn--danger').click();
+  await page.waitForFunction(() => AC.photos.all().then(l => l.length === 5));
+  ok('delete removes one photo after a confirm', true);
+  // The main backup stays small and still round-trips without photos.
+  const json = await page.evaluate(() => AC.store.exportJSON({}));
+  ok('the data backup carries no photo bytes', !/data:image|"blob"/.test(json) && json.length < 200000, json.length + ' chars');
+  const rt = await page.evaluate(async j => { const before = JSON.stringify(AC.store.get().checkins); const r = await AC.store.importJSON(j); return [r.ok !== false, JSON.stringify(AC.store.get().checkins) === before]; }, json);
+  eq('the data backup round-trips with the check-ins', rt, [true, true]);
+  const pb = await page.evaluate(async () => { const j = await AC.photos.exportJSON(); const n = JSON.parse(j).photos.length;
+    for (const p of await AC.photos.all()) await AC.photos.del(p.id);
+    const back = await AC.photos.importJSON(j); const l = await AC.photos.all(); return [n, back, l.length, l[0].blob.type]; });
+  eq('the photos backup is its own file and restores', pb, [5, 5, 5, 'image/jpeg']);
+  // Storage full → a friendly message, not a crash.
+  const quota = await page.evaluate(() => {
+    const orig = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function () { throw new DOMException('full', 'QuotaExceededError'); };
+    return AC.photos.put({ id: 'x', view: 'front', date: '2026-01-01', blob: new Blob(['x']) }).then(() => 'saved', e => e.message)
+      .finally(() => { IDBObjectStore.prototype.put = orig; });
+  });
+  ok('a full phone gets a friendly message', /Not enough storage/.test(quota), quota);
+  // Home chip
+  await page.evaluate(() => { AC.store.update(s => { s.checkins.forEach(c => { c.date = AC.util.addDays(AC.util.todayKey(), -8); }); }); AC.router.go('home'); AC.screens.render(); });
+  ok('home shows a quiet "Progress photos due" chip after 7 days', await page.getByRole('button', { name: /Progress photos due/ }).count() === 1);
+  await page.evaluate(() => { AC.store.update(s => { s.checkins.forEach(c => { c.date = AC.util.todayKey(); }); }); AC.screens.render(); });
+  ok('and hides it right after a photo check-in', await page.getByRole('button', { name: /Progress photos due/ }).count() === 0);
+  await ctx.close();
 }
 
 await browser.close();
