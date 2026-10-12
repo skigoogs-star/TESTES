@@ -63,7 +63,10 @@ const hdr = () => P.locator('.runner-head .cap').first().innerText();
 console.log('\nT01  static audit — single file, no network, no non-goals');
 {
   const src = fs.readFileSync(FILE, 'utf8');
-  ok('file under 400 KB', Buffer.byteLength(src) < 400 * 1024, Math.round(Buffer.byteLength(src) / 1024) + ' KB');
+  // The app stays under 400 KB; the line drawings have their own 1.5 MB budget on top.
+  const code = src.replace(/AC\.drawings = \{[\s\S]*?\n\};\n/, '');
+  ok('app code under 400 KB (without the drawings)', Buffer.byteLength(code) < 400 * 1024, Math.round(Buffer.byteLength(code) / 1024) + ' KB');
+  ok('drawings add no more than 1.5 MB', Buffer.byteLength(src) - Buffer.byteLength(code) <= 1.5e6, Math.round((Buffer.byteLength(src) - Buffer.byteLength(code)) / 1024) + ' KB');
   ok('no <script src>', !/<script[^>]+src=/i.test(src));
   ok('no <link rel=stylesheet>', !/<link[^>]+stylesheet/i.test(src));
   ok('no @import', !/@import/.test(src));
@@ -907,14 +910,67 @@ console.log('\nT12  design invariants');
     return bad;
   });
   eq('every figure keeps its limb lengths across both frames', figs, []);
+
+  // Line drawings (the 38 exercises). The limb test above still guards the stick
+  // fallback used for custom exercises; it can't measure a traced image.
+  const drawn = await page.evaluate(() => {
+    const D = AC.drawings, ex = AC.store.get().exercises;
+    const HANG = ['pull-up', 'weighted-pull-up', 'dead-hang', 'hanging-leg-raise'];
+    const out = { missing: [], still: [], same: [], floor: [] };
+    for (const id in ex) {
+      if (ex[id].isCustom) continue;
+      const d = D[ex[id].mediaRef];
+      if (!d || !['a', 'b'].every(k => d[k] && d[k].i && d[k].i.length > 500 && d[k].t.length === 4)) { out.missing.push(id); continue; }
+      if (!['a', 'b'].includes(d.s)) out.still.push(id);
+      if (d.a.i === d.b.i) out.same.push(id);
+      // Both frames stand on the shared floor (y = 667.5), so the toggle doesn't jump.
+      if (!HANG.includes(id)) ['a', 'b'].forEach(k => {
+        const bottom = d[k].t[1] + d[k].t[3];
+        if (Math.abs(bottom - 667.5) > 2) out.floor.push(id + '.' + k + ' ' + bottom);
+      });
+    }
+    return out;
+  });
+  eq('every exercise has a start and a finish drawing', drawn.missing, []);
+  eq('every drawing names its still frame', drawn.still, []);
+  eq('start and finish are different drawings', drawn.same, []);
+  eq('every standing or lying drawing sits on the shared floor line in both frames', drawn.floor, []);
+  const ink = await page.evaluate(() => ['dark', 'light'].map(t => {
+    document.documentElement.setAttribute('data-theme', t);
+    const f = AC.svg.figure('goblet-squat'); document.body.appendChild(f);
+    const p = f.querySelector('.ink'), r = getComputedStyle(p).fill === getComputedStyle(f).color;
+    f.remove(); return r;
+  }));
+  eq('drawings take the text colour in dark and light', ink, [true, true]);
+  const fallback = await page.evaluate(() => {
+    const f = AC.svg.figure('generic-squat');
+    return !f.classList.contains('drawn') && !!f.querySelector('.body');
+  });
+  ok('custom exercises without a drawing fall back to the stick figure', fallback);
   const thumbFrame = await page.evaluate(() => {
     AC.store.update(s => { s.onboarded = true; });
     AC.router.go('library'); AC.screens.render();
-    const fig = document.querySelector('.listrow .fig');
-    return { f0: getComputedStyle(fig.querySelector('.f0')).opacity,
-             f1: getComputedStyle(fig.querySelector('.f1')).opacity };
+    return [...document.querySelectorAll('.listrow .fig')].map(fig => {
+      const still = fig.classList.contains('still-a') ? 'a' : 'b';
+      const shown = getComputedStyle(fig.querySelector('.f0')).opacity === '1' ? 'a' : 'b';
+      const hidden = getComputedStyle(fig.querySelector(still === 'a' ? '.f1' : '.f0')).opacity;
+      return fig.classList.contains('drawn') && still === shown && hidden === '0';
+    });
   });
-  eq('thumbnails show the end pose, which names the movement', [thumbFrame.f0, thumbFrame.f1], ['0', '1']);
+  ok('library thumbnails show each drawing\'s still frame, the one that names the movement', thumbFrame.length >= 38 && thumbFrame.every(Boolean), JSON.stringify(thumbFrame));
+  {
+    // Reduced motion: the demo holds the still frame instead of animating.
+    const rm = await newPage({ reducedMotion: 'reduce' });
+    await rm.page.goto(BASE);
+    const held = await rm.page.evaluate(() => ['kettlebell-swing', 'farmers-carry'].map(id => {
+      const f = AC.svg.figure(id); document.body.appendChild(f);
+      const r = [AC.drawings[id].s, getComputedStyle(f.querySelector('.f0')).opacity, getComputedStyle(f.querySelector('.f1')).opacity];
+      f.remove(); return r.join(' ');
+    }));
+    eq('reduced motion holds each drawing on its still frame', held, ['b 0 1', 'a 1 0']);
+    await rm.ctx.close();
+    P = page;
+  }
 
   // Contrast tokens that only bite in one theme combination.
   const tokens = await page.evaluate(() => {
@@ -1358,6 +1414,359 @@ console.log('\nT16  weekly Markdown report');
   ok('the week picker switches the report', switched.changed);
   eq('and stays a single picker', switched.radios, 3);
   await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- V2-01 */
+console.log('\nV2-01  a real v1 backup survives v2 with nothing lost');
+{
+  /* fixtures/v1-backup.json and v1-localstorage.json were made by the v1 app itself (main, 2026-10-12):
+     three Day A sessions, an abandoned Day B, 21 days of weight, waist, nutrition, an Evolt scan, changed settings. */
+  const backupText = fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'v1-backup.json'), 'utf8');
+  const rawBlob = fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'v1-localstorage.json'), 'utf8');
+  const v1 = JSON.parse(backupText).state;
+  const KEYS = ['sessions', 'metrics', 'nutrition', 'scans', 'settings', 'flags', 'schedule'];
+  /* a) imported from the backup file */
+  {
+    const { ctx, page } = await newPage();
+    await page.goto(BASE);
+    const res = await page.evaluate(t => AC.store.importJSON(t), backupText);
+    ok('the v1 backup imports', res && res.ok !== false, JSON.stringify(res).slice(0, 120));
+    const st = await state(page);
+    KEYS.filter(k => k !== 'settings').forEach(k => eq('import keeps every ' + k, st[k], v1[k]));
+    eq('import keeps every v1 setting value (v2 only adds new ones)', Object.keys(v1.settings).map(k => st.settings[k]), Object.keys(v1.settings).map(k => v1.settings[k]));
+    eq('custom and seeded exercises are kept', Object.keys(st.exercises).sort(), Object.keys(v1.exercises).sort());
+    await ctx.close();
+  }
+  /* b) the v1 blob already sitting in localStorage when v2 first opens */
+  {
+    const { ctx, page } = await newPage();
+    await page.addInitScript(raw => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('athletic-cut:v1', raw); sessionStorage.setItem('seeded', '1'); } }, rawBlob);
+    await page.goto(BASE);
+    await page.waitForSelector('.weekstrip');
+    const st = await state(page);
+    const raw = JSON.parse(rawBlob);
+    KEYS.filter(k => k !== 'settings').forEach(k => eq('opening v2 on v1 data keeps every ' + k, st[k], raw[k]));
+    eq('and every v1 setting value', Object.keys(raw.settings).map(k => st.settings[k]), Object.keys(raw.settings).map(k => raw.settings[k]));
+    ok('new v2 settings arrive with defaults', st.settings.barWeightLb === 45 && Array.isArray(st.settings.platesLb) && Array.isArray(st.settings.favorites));
+    eq('the schema version is unchanged', st.schemaVersion, raw.schemaVersion);
+    ok('home shows the stored history (3 sessions logged)', st.sessions.filter(s => s.status === 'complete').length === 3);
+    await ctx.close();
+  }
+}
+
+/* ---------------------------------------------------------------- V2-02 */
+console.log('\nV2-02  onboarding explains the program from its own data');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  const t = await page.evaluate(() => document.body.innerText);
+  ok('it states the weeks from the program data', /12 weeks \(the plan allows up to 14\)/.test(t), t.slice(0, 200));
+  ok('it lists the four required days and the optional one', /Day A\s+Lower Power \+ Hinge/.test(t) && /Day D\s+Squat \+ Press \+ Kettlebell/.test(t) && /Day E/.test(t));
+  ok('it has a how-a-session-works card', /How a session works/.test(t) && /Log set/.test(t));
+  ok('Begin week 1 is still the way in', await page.getByRole('button', { name: /Begin week 1/i }).count() === 1);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-03 */
+console.log('\nV2-03  home: today\'s session, week strip, resume state');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const home = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll('.pv-row')].map(r => r.innerText.replace(/\s+/g, ' ')),
+    strip: [...document.querySelectorAll('.wk')].map(w => w.getAttribute('aria-label')),
+    quick: [...document.querySelectorAll('.quick button')].map(b => b.innerText.trim()),
+    tiles: [...document.querySelectorAll('.tile')].map(t => t.getBoundingClientRect().height)
+  }));
+  eq('the preview lists Day A\'s five blocks', home.rows.length, 5);
+  ok('with the main lift and its sets', /Trap bar deadlift 4 × 5 reps @ RPE 8/.test(home.rows[1]), home.rows[1]);
+  ok('and the finisher', /EMOM 8 min/.test(home.rows[3]), home.rows[3]);
+  eq('the week strip shows A–D and the optional day', home.strip, ['Day A, today', 'Day B, next', 'Day C', 'Day D', 'Optional day']);
+  eq('Weight, Nutrition, History are real buttons', home.quick, ['Weight', 'Nutrition', 'History']);
+  ok('stat tiles are at least 96 px tall', home.tiles.every(h => h >= 96), JSON.stringify(home.tiles));
+  /* log one main-lift set, go home: the resume card says where you are */
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.engine.logSet(); AC.engine.endRest(); AC.router.go('home'); });
+  await page.waitForSelector('.resume');
+  const resume = await page.locator('.resume').innerText();
+  ok('resume card reads "Resume session · Set 2 of 4"', /Resume session/.test(resume) && /Set 2 of 4/.test(resume), resume.replace(/\s+/g, ' '));
+  await page.evaluate(() => { AC.engine.complete({ sessionRPE: 8 }); AC.router.go('home'); });
+  await page.waitForSelector('.weekstrip');
+  const strip2 = await page.evaluate(() => [...document.querySelectorAll('.wk')].map(w => w.getAttribute('aria-label')));
+  eq('after Day A the strip moves on', strip2.slice(0, 3), ['Day A, done', 'Day B, today', 'Day C, next']);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-04 */
+console.log('\nV2-04  session loop: labelled phases, saved → rest → next set');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await tap(page, /Start session/i);
+  const phases = await page.evaluate(() => [...document.querySelectorAll('.phasebar .ph')].map(p => p.innerText.trim()));
+  eq('the phase bar is labelled', phases, ['Prep', 'Lift', 'Superset', 'Finish', 'Mobility']);
+  const checks = page.locator('button.check');
+  for (let i = 0; i < await checks.count(); i++) await checks.nth(i).click();
+  await tap(page, /^Continue/i);
+  const cur = await page.evaluate(() => ({ cur: document.querySelector('.ph.is-current').innerText.trim(), done: [...document.querySelectorAll('.ph.is-done')].map(p => p.innerText.trim()), target: document.querySelector('.ex-target').innerText }));
+  eq('Lift is current and Prep is done', [cur.cur, cur.done], ['Lift', ['Prep']]);
+  ok('the set count is shown on its own line', /^Set 1 of 4/.test(cur.target), cur.target);
+  await page.getByRole('button', { name: /^Log set/i }).click();
+  await page.waitForSelector('.restpanel');
+  const rest = await page.locator('.restpanel').innerText();
+  ok('rest says "Set 1 saved"', /Set 1 saved/.test(rest), rest.slice(0, 120));
+  ok('then REST', /Rest/.test(rest));
+  ok('then the next set right under the timer', /Next · Set 2 of 4/.test(rest), rest.replace(/\s+/g, ' ').slice(0, 200));
+  await skipRest();
+  const list = await page.evaluate(() => ({ head: !!document.querySelector('.setlist-h'), rows: [...document.querySelectorAll('.setlist .setrow')].map(r => r.innerText.replace(/\s+/g, ' ')) }));
+  ok('a compact completed-set list follows', list.head && list.rows.length === 1 && /Set 1/.test(list.rows[0]), JSON.stringify(list));
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-05 */
+console.log('\nV2-05  session menu: pause, finish early, discard');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.engine.setDraft('load', 225); AC.engine.logSet(); AC.engine.endRest(); AC.screens.render(); });
+  await page.getByRole('button', { name: /Leave session/i }).click();
+  const btns = await page.evaluate(() => [...document.querySelectorAll('.sheet .btn')].map(b => b.textContent.trim()));
+  eq('the menu offers the four choices', btns, ['Pause and leave', 'Finish early', 'Discard session', 'Cancel']);
+  await tap(page, /^Finish early/);
+  await page.waitForSelector('.finish-top');
+  const fin = await page.evaluate(() => ({ text: document.body.innerText, st: AC.store.get() }));
+  ok('finish early says the session ended, with sets done', /Session ended/.test(fin.text) && /1 of 18 sets/.test(fin.text));
+  const last = fin.st.sessions[fin.st.sessions.length - 1];
+  ok('it saves the work done', last.status === 'complete' && last.finishedEarly === true && last.entries.length === 1);
+  eq('and counts the day as done', fin.st.schedule.nextRequiredIndex, 1);
+  ok('it shows sets done against planned', /1\s*\/18/.test(fin.text.replace(/\n/g, ' ')) || /1\/18/.test(fin.text), fin.text.slice(0, 300));
+  await tap(page, /^Done$/i);
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.engine.logSet(); AC.engine.endRest(); AC.screens.render(); });
+  await page.getByRole('button', { name: /Leave session/i }).click();
+  await tap(page, /^Discard session/);
+  const conf = await page.evaluate(() => document.querySelector('.sheet') && document.querySelector('.sheet').innerText);
+  ok('discard asks first', /Discard this session\?/.test(conf || ''), conf);
+  await page.getByRole('button', { name: /^Discard$/ }).click();
+  const st = await state(page);
+  ok('discarded sets stay in history, marked abandoned', st.sessions[st.sessions.length - 1].status === 'abandoned' && !st.activeSession);
+  eq('and the day is not counted', st.schedule.nextRequiredIndex, 1);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-06 */
+console.log('\nV2-06  records: load, rep and e1RM are detected separately');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const r = await page.evaluate(() => {
+    const U = AC.util, d = U.addDays(U.todayKey(), -7);
+    const E = (load, reps, i) => ({ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: i, load, loadUnit: 'lb', reps, rpe: 8, isWarmup: false, seconds: null, distanceM: null, completedAt: d + 'T10:00:00.000Z' });
+    AC.store.update(s => s.sessions.push({ id: 'p1', dayId: 'day-a', startedAt: d + 'T10:00:00.000Z', completedAt: d + 'T10:40:00.000Z', status: 'complete', entries: [E(245, 5, 0), E(245, 5, 1)], bodyweightAtTime: 199, totals: {}, beatLast: [] }));
+    const kinds = (entries) => AC.stats.prsFor({ id: 'x', entries, bodyweightAtTime: 199 }).map(p => p.kind).sort();
+    return {
+      heavier: kinds([E(255, 5, 0)]),
+      moreReps: kinds([E(245, 7, 0)]),
+      same: kinds([E(245, 5, 0)]),
+      lighterMoreReps: kinds([E(235, 6, 0)]),
+      lighterSameReps: kinds([E(235, 5, 0)]),
+      warmupOnly: AC.stats.prsFor({ id: 'y', entries: [Object.assign(E(300, 5, 0), { isWarmup: true })], bodyweightAtTime: 199 }).length,
+      firstTime: AC.stats.prsFor({ id: 'z', entries: [{ exerciseId: 'front-squat', load: 135, loadUnit: 'lb', reps: 6, isWarmup: false }], bodyweightAtTime: 199 }).length
+    };
+  });
+  eq('heavier at the same reps: load + e1RM records', r.heavier, ['e1rm', 'load']);
+  eq('more reps at the same load: rep + e1RM records', r.moreReps, ['e1rm', 'reps']);
+  eq('matching last time is not a record', r.same, []);
+  eq('6 reps at a load never done for more than 5 is a rep record, but not an e1RM one', r.lighterMoreReps, ['reps']);
+  eq('a lighter load at the same reps is no record', r.lighterSameReps, []);
+  eq('warm-ups never set records', r.warmupOnly, 0);
+  eq('a first-ever exercise is a baseline, not a record', r.firstTime, 0);
+  /* and the finish screen shows them */
+  await page.evaluate(() => {
+    AC.engine.start('day-a'); AC.engine.nextBlock();
+    AC.engine.setDraft('load', 255); AC.engine.setDraft('reps', 5); AC.engine.logSet(); AC.engine.endRest();
+    AC.engine.complete({ sessionRPE: 8 }); AC.router.go('summary');
+  });
+  await page.waitForSelector('.prcard');
+  const cards = await page.evaluate(() => ({ hero: [...document.querySelectorAll('.prcard .prtag')].map(t => t.textContent), rows: [...document.querySelectorAll('.prrow .prtag')].map(t => t.textContent), beat: /Beat last time/.test(document.body.innerText) }));
+  eq('the strongest record (e1RM) is the big green card', cards.hero, ['e1RM PR']);
+  eq('other records are compact rows', cards.rows, ['LOAD PR']);
+  ok('and "Beat last time" is not repeated next to them', !cards.beat);
+  const saved = await state(page);
+  eq('records are stored on the session log', saved.sessions[saved.sessions.length - 1].prs.map(p => p.kind), ['load', 'e1rm']);
+  ok('the next session is the real next day', /Day B · Upper Strength/.test(await page.evaluate(() => document.body.innerText)));
+  await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- V2-07 */
+console.log('\nV2-07  plate calculator and warm-up ramp');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const m = await page.evaluate(() => ({
+    trap250: AC.stats.platesFor(250, 'lb', 'trap-bar-deadlift'),
+    bar135: AC.stats.platesFor(135, 'lb', 'front-squat'),
+    bar45: AC.stats.plateText(45, 'lb', 'front-squat'),
+    under: AC.stats.plateText(30, 'lb', 'front-squat'),
+    kg100: AC.stats.platesFor(100, 'kg', 'front-squat'),
+    odd: AC.stats.platesFor(137, 'lb', 'front-squat'),
+    ramp: AC.stats.warmupsFor(250, 'lb', 'trap-bar-deadlift')
+  }));
+  eq('250 on a 45 lb trap bar is 45+45+10+2.5 a side', m.trap250.perSide, [45, 45, 10, 2.5]);
+  eq('135 on a 45 lb bar is one 45 a side', m.bar135.perSide, [45]);
+  ok('the empty bar says so', /Just the 45 lb bar/.test(m.bar45), m.bar45);
+  ok('a load under the bar says so', /Below the 45 lb bar/.test(m.under), m.under);
+  eq('100 kg on a 20 kg bar is 25+15 a side with the default kg plates', m.kg100.perSide, [25, 15]);
+  ok('a load the plates cannot make reports the shortfall', !m.odd.exact && m.odd.short === 2, JSON.stringify(m.odd));
+  eq('the warm-up ramp is 40/60/80 % rounded to 5 lb', m.ramp, [{ load: 100, reps: 5 }, { load: 150, reps: 3 }, { load: 200, reps: 2 }]);
+  /* settings change the maths */
+  await page.evaluate(() => AC.store.update(s => { s.settings.trapBarWeightLb = 60; s.settings.platesLb = [45, 25, 10, 5]; }));
+  const after = await page.evaluate(() => AC.stats.platesFor(250, 'lb', 'trap-bar-deadlift'));
+  eq('a 60 lb trap bar and no 2.5s change the answer', [after.perSide, after.short], [[45, 45, 5], 0]);
+  /* on the lift screen */
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.store.update(s => { s.settings.trapBarWeightLb = 45; s.settings.platesLb = [45, 35, 25, 10, 5, 2.5]; }); AC.engine.nextBlock(); AC.engine.setDraft('load', 225); AC.screens.render(); });
+  const plates = await page.locator('.plates').first().innerText();
+  ok('the load stepper shows the plates per side', /Per side: 45 \+ 45 · 45 lb trap bar/.test(plates), plates);
+  await page.locator('.stepper').first().locator('.step-btn').last().click();
+  ok('and updates as the load changes', /Per side: 45 \+ 45 \+ 2\.5/.test(await page.locator('.plates').first().innerText()));
+  await page.getByRole('button', { name: /Warm-up/ }).first().click();
+  await page.getByRole('button', { name: /^Log warm-up 90 lb for 5/ }).click();
+  const st = await state(page);
+  const wu = st.activeSession.entries.filter(e => e.isWarmup);
+  ok('a warm-up row logs that load as a warm-up', wu.length === 1 && wu[0].load === 90 && wu[0].reps === 5, JSON.stringify(wu));
+  eq('it never counts as a working set', st.activeSession.block.setIndex, 0);
+  ok('and no rest timer starts', !st.activeSession.timer);
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-08 */
+console.log('\nV2-08  lift history, editable past sets, weekly ring, More');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await page.evaluate(() => {
+    const U = AC.util;
+    [21, 14, 7].forEach((d, i) => {
+      const date = U.addDays(U.todayKey(), -d);
+      AC.store.update(s => s.sessions.push({ id: 'h' + i, dayId: 'day-a', startedAt: date + 'T10:00:00.000Z', completedAt: date + 'T10:40:00.000Z', status: 'complete', bodyweightAtTime: 199, notes: '',
+        totals: { volumeLb: 0, setsLogged: 2, durationSec: 2400 }, beatLast: [],
+        entries: [0, 1].map(k => ({ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: k, load: 235 + i * 10, loadUnit: 'lb', reps: 5, rpe: 8, isWarmup: false, seconds: null, distanceM: null, completedAt: date + 'T10:10:00.000Z' })) }));
+    });
+  });
+  const hh = await page.evaluate(() => AC.stats.liftHistory('trap-bar-deadlift'));
+  eq('history keeps the last three sessions, newest first', hh.last.map(r => r.best.load), [255, 245, 235]);
+  eq('with the best set', hh.best.best.load, 255);
+  eq('and a trend per session', hh.trend.length, 3);
+  await tap(page, /Start session/i);
+  await page.evaluate(() => { AC.engine.nextBlock(); AC.screens.render(); });
+  const row = await page.locator('.histrow').innerText();
+  ok('the lift screen shows the history line', /Best 255×5/.test(row) && /last 255×5, 245×5, 235×5/.test(row), row.replace(/\s+/g, ' '));
+  await page.locator('.histrow').click();
+  await page.waitForSelector('.sheet');
+  ok('tapping it opens the last sessions', /history/.test(await page.locator('.sheet-title').innerText()));
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { AC.engine.abandon(); AC.router.go('history'); });
+  /* edit a past set */
+  await page.waitForSelector('.listrow');
+  await page.evaluate(() => { const rows = [...document.querySelectorAll('.listrow')]; rows.find(r => /Day A/.test(r.textContent) && /2 sets/.test(r.textContent)).click(); });
+  await page.waitForSelector('.editrow');
+  await page.locator('.editrow').first().click();
+  await page.waitForSelector('.sheet .stepper');
+  await page.locator('.sheet .stepper').last().locator('.step-btn').last().click();
+  await page.getByRole('button', { name: /^Save$/ }).click();
+  const edited = await state(page);
+  const changed = edited.sessions.find(s => s.id === 'h2').entries[0];
+  ok('a past set can be edited', changed.reps === 6 && !!changed.editedAt, JSON.stringify(changed));
+  ok('and the session volume follows', edited.sessions.find(s => s.id === 'h2').totals.volumeLb === 255 * 6 + 255 * 5);
+  await page.locator('.sheet textarea').fill('Grip slipped on set 2');
+  const note = (await state(page)).sessions.find(s => s.id === 'h2').notes;
+  eq('notes on a past session are editable', note, 'Grip slipped on set 2');
+  /* weekly ring + More */
+  await page.evaluate(() => AC.router.go('home'));
+  await page.waitForSelector('.tile--ring');
+  ok('home shows a weekly ring with sessions this week', /of 4 sessions this week/.test(await page.locator('.tile--ring').getAttribute('aria-label')));
+  await page.evaluate(() => AC.router.go('more'));
+  await page.waitForSelector('.grouptitle');
+  eq('More is grouped', await page.evaluate(() => [...document.querySelectorAll('.grouptitle')].map(g => g.textContent)), ['Workout', 'Appearance', 'Data']);
+  ok('the report is called Export weekly report', await page.getByRole('button', { name: /^Export weekly report/ }).count() === 1);
+  await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- V2-09 */
+console.log('\nV2-09  library views, favorites, demo controls, progress headline');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  await page.evaluate(() => AC.router.go('library'));
+  await page.waitForSelector('.listrow');
+  const lib = await page.evaluate(() => ({ rows: document.querySelectorAll('.listrow').length, count: document.querySelector('.meta[aria-live]').textContent, rowsOfChips: document.querySelectorAll('.chips').length }));
+  ok('the library shows a result count', /^\d+ exercises$/.test(lib.count) && +lib.count.split(' ')[0] === lib.rows, lib.count);
+  eq('with one filter row', lib.rowsOfChips, 1);
+  await page.getByRole('radio', { name: /Favorites/ }).click();
+  ok('favorites start empty and say how to add one', /tap the star/.test(await page.locator('.scroll').last().innerText()));
+  await page.evaluate(() => AC.router.go('exercise/trap-bar-deadlift'));
+  await page.getByRole('button', { name: /Add to favorites/ }).click();
+  eq('the star saves a favorite', (await state(page)).settings.favorites, ['trap-bar-deadlift']);
+  const ctl = await page.evaluate(() => [...document.querySelectorAll('.figctl button')].map(b => b.textContent + ':' + b.getAttribute('aria-pressed')));
+  eq('the demo has explicit Start / Finish / Play controls', ctl.map(x => x.split(':')[0]), ['Start', 'Finish', 'Play']);
+  await page.getByRole('button', { name: /^Finish$/ }).click();
+  ok('Finish shows the end position', await page.evaluate(() => document.querySelector('.figbox .fig').classList.contains('frame1')));
+  ok('the lift screen demo is the line drawing', await page.evaluate(() => document.querySelector('.figbox .fig').classList.contains('drawn')));
+  await page.evaluate(() => AC.router.go('library'));
+  await page.waitForSelector('.listrow');
+  await page.getByRole('radio', { name: /Favorites/ }).click();
+  const favRows = await page.evaluate(() => [...document.querySelectorAll('.listrow-title')].map(t => t.textContent));
+  eq('the favorites view lists it', favRows, ['★ Trap bar deadlift']);
+  await page.getByRole('radio', { name: /^All$/ }).click();
+  /* progress headline from data only */
+  await page.evaluate(() => {
+    const U = AC.util;
+    AC.store.update(s => {
+      for (let i = 20; i >= 0; i--) s.metrics.push({ id: 'w' + i, date: U.addDays(U.todayKey(), -i), type: 'weight', value: 200 - (20 - i) * 0.1, unit: 'lb', source: 'manual' });
+      [14, 0].forEach((d, i) => s.metrics.push({ id: 'wa' + i, date: U.addDays(U.todayKey(), -d), type: 'waist', value: 32.3 - i * 0.9, unit: 'in', source: 'manual' }));
+      [14, 0].forEach((d, i) => { const date = U.addDays(U.todayKey(), -d); s.sessions.push({ id: 'pp' + i, dayId: 'day-a', startedAt: date + 'T10:00:00.000Z', completedAt: date + 'T10:40:00.000Z', status: 'complete', bodyweightAtTime: 199, totals: {}, beatLast: [],
+        entries: [{ blockId: 'a-main', slotId: 'a-main-1', exerciseId: 'trap-bar-deadlift', setIndex: 0, load: 245 + i * 15, loadUnit: 'lb', reps: 5, rpe: 8, isWarmup: false, completedAt: date + 'T10:10:00.000Z' }] }); });
+    });
+    AC.router.go('progress');
+  });
+  await page.waitForSelector('.takeaway');
+  const t = await page.locator('.takeaway').innerText();
+  ok('progress leads with a takeaway headline', /Waist −0\.9 in/.test(t) && /weight −1\.\d lb/.test(t) && /Trap bar deadlift e1RM \+18 lb/.test(t), t);
+  ok('the range controls are sticky', await page.evaluate(() => getComputedStyle(document.querySelector('.sticky-range')).position === 'sticky'));
+  await ctx.close();
+}
+
+
+/* ---------------------------------------------------------------- V2-10 */
+console.log('\nV2-10  long stepper values fit (Body: fasted weight 199.7)');
+{
+  for (const scheme of ['dark', 'light']) {
+    const { ctx, page } = await newPage({ colorScheme: scheme });
+    await page.goto(BASE);
+    await tap(page, /Begin week 1/i);
+    await page.evaluate(() => AC.router.go('body'));
+    await page.waitForSelector('.stepper .step-val');
+    const fit = await page.evaluate(() => [...document.querySelectorAll('.stepper .step-val')].filter(v => v.offsetParent).map(v => {
+      const span = v.querySelector('span') || v; const r = document.createRange(); r.selectNodeContents(span);
+      const t = r.getBoundingClientRect(), c = v.getBoundingClientRect();
+      return { text: v.innerText.trim().split('\n')[0], fits: t.left >= c.left - 0.5 && t.right <= c.right + 0.5 };
+    }));
+    ok('every stepper number fits its cell in ' + scheme + ' (' + fit.map(f => f.text).join(', ') + ')', fit.length > 0 && fit.every(f => f.fits), JSON.stringify(fit));
+    ok('the fasted weight reads 199.7 in full in ' + scheme, fit.some(f => f.text === '199.7' && f.fits), JSON.stringify(fit));
+    await ctx.close();
+  }
 }
 
 await browser.close();
