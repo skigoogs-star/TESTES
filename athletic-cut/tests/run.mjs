@@ -124,8 +124,8 @@ console.log('\nT02  boot, seed integrity, zero network requests');
   eq('every new exercise has at least one cue and at most two mistakes',
     NEW_EX.filter(id => !s.exercises[id] || !s.exercises[id].cues.length || s.exercises[id].mistakes.length > 2), []);
   const missingFig = await page.evaluate(() =>
-    Object.values(AC.store.get().exercises).filter(e => !AC.figures.F[e.mediaRef]).map(e => e.id));
-  eq('every exercise has its own figure', missingFig, []);
+    Object.values(AC.store.get().exercises).filter(e => !(AC.drawings[e.mediaRef] || AC.figures.F[e.mediaRef])).map(e => e.id));
+  eq('every exercise has its own figure (a drawing, or a stick figure)', missingFig, []);
   const unresolved = await page.evaluate(() => {
     const s = AC.store.get(), out = [];
     s.program.days.forEach(d => {
@@ -923,7 +923,7 @@ console.log('\nT12  design invariants');
   // fallback used for custom exercises; it can't measure a traced image.
   const drawn = await page.evaluate(() => {
     const D = AC.drawings, ex = AC.store.get().exercises;
-    const HANG = ['pull-up', 'weighted-pull-up', 'dead-hang', 'hanging-leg-raise'];
+    const HANG = ['pull-up', 'weighted-pull-up', 'dead-hang', 'hanging-leg-raise', 'hanging-knee-raise'];
     const out = { missing: [], still: [], same: [], floor: [] };
     for (const id in ex) {
       if (ex[id].isCustom || /^generic-/.test(ex[id].mediaRef)) continue;
@@ -967,7 +967,7 @@ console.log('\nT12  design invariants');
   });
   ok('library thumbnails show each drawing\'s still frame, the one that names the movement', thumbFrame.length >= 38 && thumbFrame.every(Boolean), JSON.stringify(thumbFrame));
   const awaiting = await page.evaluate(() => Object.values(AC.store.get().exercises).filter(e => /^generic-/.test(e.mediaRef)).map(e => e.id).sort());
-  eq('the 15 new exercises use the stick fallback until their drawings exist', awaiting.length, 15);
+  eq('all 53 exercises have their line drawing (no stick fallbacks left)', awaiting, []);
   {
     // Reduced motion: the demo holds the still frame instead of animating.
     const rm = await newPage({ reducedMotion: 'reduce' });
