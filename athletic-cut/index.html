@@ -1641,6 +1641,9 @@ AC.seed = (function () {
       substitutions: opts.substitutions || []
     };
     if (opts.timeLog) out.timeLog = opts.timeLog;   /* 'measured': log the time taken, no hold timer */
+    if (opts.timeStep) out.timeStep = opts.timeStep;
+    if (opts.distanceLog) out.distanceLog = opts.distanceLog;   /* 'jump': best jump of the set, metres */
+    if (opts.benchmark) out.benchmark = true;
     return out;
   }
 
@@ -1868,50 +1871,64 @@ AC.seed = (function () {
         instructions: 'Optional: comfortable mobility for 1-2 min if time remains. Relaxed.', items: [slot(id + '-1', exId, 1, T('1-2 min, optional'))] };
     }
 
-    /* ---- Day C speed block, per week ---- */
-    function cs(n, exId, display) { return slot('p2c-speed-' + n, exId, 1, T(display), { loadType: 'none' }); }
-    var SPEED = [null,
-      [[cs(1, 'lateral-bound', '2 x 2/side, controlled'), cs(2, 'acceleration', '4 x 10 m at 75-85%'), cs(3, 'deceleration', '4 x 10 m approach-and-stop, easy')], 'Rest 45-60 s between bounds, 2 min between runs, 60 s between braking reps.'],
-      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '4 x 15 m at 80-90%'), cs(3, 'deceleration', '4 braking reps, controlled stopping')], 'Rest 45-60 s between bounds, 2 min between runs, 60 s between braking reps.'],
-      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '4 x 20 m at 85-90%'), cs(4, 'planned-cut', '45 degrees, 2 cuts/side at 70-80%')], 'Rest 60 s between bounds, 2-3 min between runs, 60-90 s between cuts.'],
-      [[cs(1, 'lateral-bound', '1 x 2/side'), cs(2, 'acceleration', '3 x 10 m relaxed, 70-80%'), cs(3, 'deceleration', '2 braking reps, easy')], 'Rest 60 s, 2 min between runs, 60 s between braking reps.'],
-      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m at about 90%'), cs(5, 'flying-sprint', '2 x 10 m fly at about 90%'), cs(4, 'planned-cut', '45 degrees, 2 cuts/side at 75-85%')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
-      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m, 90-95% only if comfortable'), cs(5, 'flying-sprint', '2 x 10 m fly, 90-95% only if comfortable'), cs(4, 'planned-cut', '45 degrees, 2 cuts/side, controlled')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
-      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m at 90-95%'), cs(5, 'flying-sprint', '2 x 10 m fly at 90-95%'), cs(4, 'planned-cut', '90 degrees, 2 cuts/side at 75-85%')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
-      [[cs(1, 'lateral-bound', '1 x 2/side'), cs(2, 'acceleration', '3 x 15 m relaxed, 75-85%'), cs(4, 'planned-cut', '45 degrees, 1 cut/side, easy')], 'Rest 60 s, 2 min between runs, 90 s between cuts.'],
-      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m, up to 95%'), cs(5, 'flying-sprint', '2 x 10 m fly, up to 95%'), cs(4, 'planned-cut', '90 degrees, 2 crisp cuts/side')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
-      [[cs(1, 'lateral-bound', '2 x 3/side'), cs(2, 'acceleration', '2 x 20 m, repeat the quality'), cs(5, 'flying-sprint', '2 x 10 m fly, do not add volume'), cs(4, 'planned-cut', '90 degrees, 2 cuts/side')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
-      [[cs(1, 'lateral-bound', '1 x 3/side'), cs(2, 'acceleration', '2 x 20 m, fast and relaxed'), cs(5, 'flying-sprint', '2 x 10 m fly, fast and relaxed'), cs(4, 'planned-cut', '90 degrees, 1 cut/side')], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts. Less total work.'],
-      [[cs(2, 'acceleration', '3 x 20 m benchmark, best technically sound efforts'), cs(4, 'planned-cut', 'Familiar 90 degree cut, 1/side')], 'Rest 3 min between runs, 90 s between cuts. No unfamiliar maximal drill.']];
+    /* ---- Day C, per week: bounds (tick) → accelerations (timed) → flys (timed; indoors
+       bike intervals or the sled, logged load + time) → braking/cuts (tick) → core. ----
+       [bounds, [runs, metres, effort], [flys, effort] | null, [exercise, display], rest note] */
+    var C = [null,
+      ['2 x 2/side, controlled', [4, 10, '75-85%'], null, ['deceleration', '4 x 10 m approach-and-stop, easy'], 'Rest 45-60 s between bounds, 2 min between runs, 60 s between braking reps.'],
+      ['2 x 3/side', [4, 15, '80-90%'], null, ['deceleration', '4 braking reps, controlled stopping'], 'Rest 45-60 s between bounds, 2 min between runs, 60 s between braking reps.'],
+      ['2 x 3/side', [4, 20, '85-90%'], null, ['planned-cut', '45 degrees, 2 cuts/side at 70-80%'], 'Rest 60 s between bounds, 2-3 min between runs, 60-90 s between cuts.'],
+      ['1 x 2/side', [3, 10, 'relaxed, 70-80%'], null, ['deceleration', '2 braking reps, easy'], 'Rest 60 s, 2 min between runs, 60 s between braking reps.'],
+      ['2 x 3/side', [2, 20, 'about 90%'], [2, 'about 90%'], ['planned-cut', '45 degrees, 2 cuts/side at 75-85%'], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      ['2 x 3/side', [2, 20, '90-95% only if comfortable'], [2, '90-95% only if comfortable'], ['planned-cut', '45 degrees, 2 cuts/side, controlled'], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      ['2 x 3/side', [2, 20, '90-95%'], [2, '90-95%'], ['planned-cut', '90 degrees, 2 cuts/side at 75-85%'], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      ['1 x 2/side', [3, 15, 'relaxed, 75-85%'], null, ['planned-cut', '45 degrees, 1 cut/side, easy'], 'Rest 60 s, 2 min between runs, 90 s between cuts.'],
+      ['2 x 3/side', [2, 20, 'up to 95%'], [2, 'up to 95%'], ['planned-cut', '90 degrees, 2 crisp cuts/side'], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      ['2 x 3/side', [2, 20, 'repeat the quality'], [2, 'do not add volume'], ['planned-cut', '90 degrees, 2 cuts/side'], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts.'],
+      ['1 x 3/side', [2, 20, 'fast and relaxed'], [2, 'fast and relaxed'], ['planned-cut', '90 degrees, 1 cut/side'], 'Rest 60 s between bounds, 2-3 min between runs, 3 min between flys, 90 s between cuts. Less total work.'],
+      [null, [3, 20, 'benchmark: best technically sound efforts'], null, ['planned-cut', 'Familiar 90 degree cut, 1/side'], 'Rest 3 min between runs, 90 s between cuts. No unfamiliar maximal drill.']];
     var SPEED_NOTE = ' Full recovery matters more than the clock. If sprint readiness is uncertain, repeat weeks 1-3 instead of starting flying runs. Leave space to slow down gradually; never sprint toward a wall.';
-    /* Indoor (10-20 m track): accelerations capped at 15 m, flying runs become 20 s spin bike sprints. */
-    function indoor(items) {
-      return items.map(function (it) {
-        var c = JSON.parse(JSON.stringify(it));
-        if (c.exerciseId === 'acceleration') c.repsTarget.display = c.repsTarget.display.replace(/(\d+) m/, function (m, d) { return Math.min(+d, 15) + ' m'; }) + ' (indoors, 15 m max)';
-        if (c.exerciseId === 'flying-sprint') {
-          c.exerciseId = 'spin-bike-sprint'; c.id = 'p2c-speed-bike';
-          c.repsTarget = T(c.repsTarget.display.replace(/^(\d+) x 10 m fly/, '$1 x 20 s spin bike sprint') + ', heavy resistance');
-        }
-        return c;
-      });
+    var SPEED_VARIANTS = [{ id: 'outdoor', label: 'Outdoors' }, { id: 'indoor', label: 'Indoors · bike' }, { id: 'sled', label: 'Indoors · sled' }];
+    function timed(id, exId, n, display, opts) {
+      return slot(id, exId, n, T(display), Object.assign({ loadType: 'none', logMetric: 'time', timeLog: 'measured', logged: true, seconds: null, timeStep: 0.1 }, opts || {}));
     }
-    /* Sled option: the sled push takes the bike sprints' place (same count), never both. */
-    function sled(items) {
-      return indoor(items).map(function (c) {
-        if (c.exerciseId !== 'spin-bike-sprint') return c;
-        var n = (/^(\d+) x/.exec(c.repsTarget.display) || [0, 2])[1];
-        return slot('p2c-speed-sled', 'sled-push', 1, T(n + ' x 15 m sled push, 15-20 s of hard driving each, 90-120 s walk-back rest'), { loadType: 'none' });
-      });
-    }
-    var speedWeeks = {};
+    var bW = {}, aW = {}, fW = {}, cW = {};
     for (var w = 1; w <= 12; w++) {
-      var hasFly = SPEED[w][0].some(function (i) { return i.exerciseId === 'flying-sprint'; });
-      speedWeeks[w] = { items: SPEED[w][0], instructions: SPEED[w][1] + SPEED_NOTE,
-        variantPatches: { indoor: { items: indoor(SPEED[w][0]), instructions: 'Indoors: accelerations capped at 15 m; flying runs become 20 s spin bike sprints. ' + SPEED[w][1] + SPEED_NOTE },
-          sled: { items: sled(SPEED[w][0]), instructions: (hasFly ? 'Indoors with the sled: accelerations capped at 15 m; sled pushes replace the flying runs (no bike sprints today). '
-            : 'Indoors: accelerations capped at 15 m. No flying runs this week, so no sled pushes either. ') + SPEED[w][1] + SPEED_NOTE } } };
+      var c = C[w], acc = c[1], indoorM = Math.min(acc[1], 15);
+      bW[w] = c[0] ? { items: [slot('p2c-bound-1', 'lateral-bound', 1, T(c[0]), { loadType: 'none' })] } : { skip: true };
+      var accOut = { restSeconds: acc[1] === 10 && w !== 12 ? 120 : w === 12 ? 180 : 150,
+        instructions: 'Accelerations: ' + acc[0] + ' x ' + acc[1] + ' m, ' + acc[2] + '. Time each run if you can time it the same way every week. ' + c[4] + SPEED_NOTE,
+        items: [timed('p2c-acc-1', 'acceleration', acc[0], acc[0] + ' x ' + acc[1] + ' m, ' + acc[2], { distanceM: acc[1], benchmark: w === 12 })] };
+      var accIn = { instructions: 'Indoors: ' + acc[0] + ' x ' + indoorM + ' m (15 m max), ' + acc[2] + '. Time each run. ' + c[4] + SPEED_NOTE,
+        items: [timed('p2c-acc-1', 'acceleration', acc[0], acc[0] + ' x ' + indoorM + ' m, ' + acc[2] + ' (indoors)', { distanceM: indoorM, benchmark: w === 12 })] };
+      aW[w] = Object.assign({}, accOut, { variantPatches: { indoor: accIn, sled: accIn } });
+      var f = c[2];
+      fW[w] = !f ? { skip: true } : {
+        skip: false, mode: 'straight-sets', restSeconds: 180,
+        instructions: 'Flying runs: 20-30 m progressive run-in, then a 10 m fast zone, then a gradual run-out. ' + f[0] + ' x 10 m fly, ' + f[1] + '. Time the fly zone. Rest 3 min.',
+        items: [timed('p2c-fly-1', 'flying-sprint', f[0], f[0] + ' x 10 m fly, ' + f[1], { distanceM: 10 })],
+        variantPatches: {
+          indoor: { mode: 'interval', label: 'Bike sprints', instructions: 'Indoors: the flying runs become ' + f[0] + ' x 20 s spin bike sprints, heavy resistance, ' + f[1] + '. Easy spinning for 3 min between.',
+            interval: { effortsMin: f[0], effortsMax: f[0], effortSecondsMin: 20, effortSecondsMax: 20, effortSecondsDefault: 20, restSeconds: 180,
+              stopRule: 'If the second one is noticeably slower, stop.' },
+            items: [slot('p2c-fly-bike', 'spin-bike-sprint', f[0], { kind: 'seconds', value: 20, display: f[0] + ' x 20 s, heavy resistance' }, { loadType: 'none', logMetric: 'time', logged: true })] },
+          sled: { label: 'Sled', restSeconds: 105, instructions: 'Indoors: sled pushes replace the flying runs (no bike sprints today). ' + f[0] + ' x 15 m, 15-20 s of hard driving each, 90-120 s walk-back rest. Log the load and the time of each push.',
+            items: [slot('p2c-fly-sled', 'sled-push', f[0], { kind: 'seconds', value: 18, display: f[0] + ' x 15 m, 15-20 s each' }, { loadType: 'sled', logMetric: 'time', timeLog: 'measured', logged: true, seconds: 18, distanceM: 15 })] }
+        } };
+      cW[w] = { label: c[3][0] === 'deceleration' ? 'Braking' : 'Cuts', instructions: c[4], items: [slot('p2c-cut-1', c[3][0], 1, T(c[3][1]), { loadType: 'none' })] };
     }
+    function cBlock(id, kind, label, mode, weeks, extra) {
+      var b = { id: id, kind: kind, mode: mode, label: label, targetMinutes: 5, restSeconds: 0, instructions: '', items: [], weeks: weeks };
+      for (var k in extra || {}) b[k] = extra[k];
+      return b;
+    }
+    var speedBlocks = [
+      cBlock('p2c-bound', 'jumps', 'Bounds', 'checklist', bW, { targetMinutes: 3, instructions: 'Lateral bounds: stick each landing. Skill and power, not a fatigue circuit.', items: bW[1].items }),
+      cBlock('p2c-acc', 'runs', 'Runs', 'straight-sets', aW, { targetMinutes: 10, restSeconds: 120, variantKey: 'speedMode', variants: SPEED_VARIANTS,
+        instructions: aW[1].instructions, items: aW[1].items }),
+      cBlock('p2c-fly', 'flys', 'Flys', 'straight-sets', fW, { targetMinutes: 8, restSeconds: 180, variantKey: 'speedMode', variants: SPEED_VARIANTS, skip: true }),
+      cBlock('p2c-cut', 'drills', 'Cuts', 'checklist', cW, { targetMinutes: 5, instructions: cW[1].instructions, items: cW[1].items })
+    ];
 
     /* ---- Day D hamstrings ---- */
     var ham = slot('p2d-ham-1', 'nordic-curl', 1, R(3, 3), { loadType: 'bodyweight', logMetric: 'reps', logged: true, substitutions: ['slider-curl'],
@@ -1927,9 +1944,10 @@ AC.seed = (function () {
         '5-7,9-11': { instructions: 'Nordic curl 2 x 4 (or slider curl 2 x 8). Reduce assistance only with control. Rest 90 s.' },
         '4,8,12': { instructions: 'Slider curl 1 x 6, easy. Rest 60 s.', restSeconds: 60 } }) };
 
-    var jumpItem = slot('p2a-jump-1', 'broad-jump', 1, T('3 x 2'), { loadType: 'none', substitutions: ['box-jump'] });
-    jumpItem.weeks = W({ '1-3,5-7,9-11': { repsTarget: T('3 x 2, crisp, controlled landing') }, '4,8': { repsTarget: T('2 x 2, comfortable, submaximal') },
-      '12': { repsTarget: T('3 x 1 benchmark, best controlled effort, measure it the same way') } });
+    /* Broad jumps log the best distance of each set (metres). Week 12 is the benchmark. */
+    var jumpItem = slot('p2a-jump-1', 'broad-jump', 3, T('3 x 2'), { loadType: 'none', logMetric: 'distance', distanceLog: 'jump', logged: true, substitutions: ['box-jump'] });
+    jumpItem.weeks = W({ '1-3,5-7,9-11': { sets: 3, repsTarget: T('3 x 2, crisp, controlled landing') }, '4,8': { sets: 2, repsTarget: T('2 x 2, comfortable, submaximal') },
+      '12': { sets: 3, repsTarget: T('3 x 1 benchmark, best controlled effort'), benchmark: true } });
 
     return {
       id: 'athletic-build', phaseId: 'phase-2', name: 'Athletic Build', weeks: 12, weeksMax: 12,
@@ -1944,8 +1962,8 @@ AC.seed = (function () {
             slot('p2a-prep-1', 'jog', 1, T('Brief easy movement'), { loadType: 'none' }),
             slot('p2a-prep-2', 'hip-90-90', 1, T('Dynamic hips and ankles')),
             slot('p2a-prep-3', 'glute-bridge', 1, T('Squat and hinge rehearsal'))]),
-          { id: 'p2a-jump', kind: 'jumps', mode: 'checklist', label: 'Jumps', targetMinutes: 4, restSeconds: 75,
-            instructions: 'Broad jumps before lifting, done fresh. Box jump is the substitute if you already know it. Rest 60-90 s.', items: [jumpItem],
+          { id: 'p2a-jump', kind: 'jumps', mode: 'straight-sets', label: 'Jumps', targetMinutes: 4, restSeconds: 75,
+            instructions: 'Broad jumps before lifting, done fresh. Log the best jump of each set, measured the same way each time. Box jump is the substitute if you already know it. Rest 60-90 s.', items: [jumpItem],
             weeks: W({ '12': { instructions: 'Broad-jump benchmark: 3 x 1, best controlled effort, measured the same way each time. Rest 90 s.' } }) },
           mainBlock('p2a-main', 'trap-bar-deadlift', 'Trap bar deadlift'),
           pair('p2a-ss', 'Superset',
@@ -1970,9 +1988,6 @@ AC.seed = (function () {
           optMob('p2b-mob', 'dead-hang')
         ] },
         (function () {
-          var speed = { id: 'p2c-speed', kind: 'sprints', mode: 'checklist', label: 'Speed + cuts', targetMinutes: 22, restSeconds: 0,
-            instructions: SPEED[1][1] + SPEED_NOTE, items: SPEED[1][0], weeks: speedWeeks,
-            variantKey: 'speedMode', variants: [{ id: 'outdoor', label: 'Outdoors' }, { id: 'indoor', label: 'Indoors · bike' }, { id: 'sled', label: 'Indoors · sled' }] };
           var core = pair('p2c-core', 'Core',
             slot('p2c-core-1', 'pallof-press', 2, RS(8, 8), { loadType: 'cable', logMetric: 'reps', logged: true, notes: '2 s hold.' }),
             slot('p2c-core-2', 'copenhagen-plank', 2, { kind: 'seconds-each-side', value: 20, display: '15-20 s/side' }, { loadType: 'bodyweight', logMetric: 'time', logged: true, seconds: 20 }),
@@ -1987,7 +2002,7 @@ AC.seed = (function () {
               slot('p2c-prep-2', 'leg-swing', 1, T('Dynamic ankle and hip work'), { loadType: 'none' }),
               slot('p2c-prep-3', 'a-skip', 1, T('Marching and skipping'), { loadType: 'none' }),
               slot('p2c-prep-4', 'build-up-run', 1, T('Progressive build-ups'), { loadType: 'none' })]),
-            speed, core
+            speedBlocks[0], speedBlocks[1], speedBlocks[2], speedBlocks[3], core
           ] };
         })(),
         { id: 'day-d', letter: 'D', label: 'Squat + press', type: 'strength', blocks: [
@@ -2052,7 +2067,7 @@ AC.seed = (function () {
       (b.items || []).forEach(function (it) { delete it.weeks; });
       delete b.weeks; delete b.variantPatches;
       return b;
-    });
+    }).filter(function (b) { return !b.skip; });
   }
 
   function defaultSettings() {
@@ -3397,6 +3412,12 @@ AC.engine = (function () {
     if (!load && slot.loadType === 'kettlebell') load = KB_DEFAULT;
     var reps = targetReps(slot);
     if (reps === null && slot.logMetric === 'reps') reps = 0;   /* AMRAP: start at 0, never null */
+    var prevE = (slot.timeLog === 'measured' || slot.distanceLog === 'jump') ? AC.stats.lastFor(slot.exerciseId, excludeSessionId) : null;
+    var prevSet = prevE && prevE.sets[prevE.sets.length - 1];
+    if (slot.distanceLog === 'jump') return { load: null, unit: s.unit, reps: null, rpe: null, seconds: null,
+      distanceM: prevSet && prevSet.distanceM ? prevSet.distanceM : 2, suggested: false, suggestReason: '', suggestFrom: null };
+    if (slot.timeLog === 'measured' && !slot.seconds) return { load: load, unit: s.unit, reps: null, rpe: null,
+      seconds: prevSet && prevSet.seconds ? prevSet.seconds : 3, distanceM: slot.distanceM, suggested: s.suggested, suggestReason: s.reason, suggestFrom: s.load };
     return {
       load: load, unit: s.unit, reps: reps,
       rpe: null,
@@ -3465,10 +3486,15 @@ AC.engine = (function () {
     AC.store.update(function (s) {
       s.settings[blk.variantKey] = vid;
       var r = resolveDay(a.dayId, a.dayOptionId);
-      var fresh = r && r.blocks.filter(function (x) { return x.id === blk.id; })[0];
-      if (!fresh) return;
-      s.activeSession.blocks[s.activeSession.blockIndex] = fresh;
-      s.activeSession.block = initBlock(fresh, s.activeSession.sessionId);
+      if (!r) return;
+      /* This block and every later block on the same setting (Phase 2: accelerations + flys). */
+      var A = s.activeSession;
+      for (var i = A.blockIndex; i < A.blocks.length; i++) {
+        if (A.blocks[i].variantKey !== blk.variantKey) continue;
+        var fresh = r.blocks.filter(function (x) { return x.id === A.blocks[i].id; })[0];
+        if (fresh) A.blocks[i] = fresh;
+      }
+      A.block = initBlock(A.blocks[A.blockIndex], A.sessionId);
     });
     emit();
   }
@@ -3806,6 +3832,7 @@ AC.engine = (function () {
       rpe: draft.rpe === undefined ? null : draft.rpe,
       distanceM: slot.logMetric === 'distance' ? draft.distanceM : null,
       seconds: slot.logMetric === 'time' ? draft.seconds : null,
+      benchmark: slot.benchmark ? true : undefined,
       isWarmup: !!isWarmup,
       completedAt: new Date().toISOString()
     };
@@ -5475,12 +5502,16 @@ AC.screens = (function () {
     if (hasLoad) {
       wrap.appendChild(loadStepper(slot, draft, function (v) { AC.engine.setDraft('load', v, slot.id); }));
     }
-    if (blk.mode === 'carry' || slot.logMetric === 'distance') {
+    if (slot.distanceLog === 'jump') {
+      wrap.appendChild(ui.stepper({ label: slot.benchmark ? 'Benchmark jump' : 'Best jump this set', unit: 'm', value: draft.distanceM || 2, step: 0.05, decimals: 2,
+        min: 0.5, max: 4, size: 'sm', onChange: function (v) { AC.engine.setDraft('distanceM', v, slot.id); } }));
+    } else if (blk.mode === 'carry' || slot.logMetric === 'distance') {
       wrap.appendChild(ui.stepper({ label: 'Distance', unit: 'm', value: draft.distanceM || 40, step: 5,
         min: 5, max: 400, size: 'sm', onChange: function (v) { AC.engine.setDraft('distanceM', v, slot.id); } }));
     } else if (slot.logMetric === 'time' && slot.timeLog === 'measured') {
-      wrap.appendChild(ui.stepper({ label: 'Time', unit: 's', value: draft.seconds || 18, step: 1,
-        min: 1, max: 120, size: 'sm', onChange: function (v) { AC.engine.setDraft('seconds', v, slot.id); } }));
+      var tStep = slot.timeStep || 1;
+      wrap.appendChild(ui.stepper({ label: slot.benchmark ? 'Benchmark time' : 'Time', unit: 's', value: draft.seconds || 18, step: tStep, decimals: tStep < 1 ? 1 : 0,
+        min: tStep < 1 ? 0.5 : 1, max: 120, size: 'sm', onChange: function (v) { AC.engine.setDraft('seconds', v, slot.id); } }));
     } else if (slot.logMetric === 'time') {
       wrap.appendChild(ui.stepper({ label: 'Hold', unit: 's', value: draft.seconds || 30, step: 5,
         min: 5, max: 600, size: 'sm', onChange: function (v) { AC.engine.setDraft('seconds', v, slot.id); } }));
@@ -5495,6 +5526,8 @@ AC.screens = (function () {
         onChange: function (v) { AC.engine.setDraft('reps', v, slot.id); } }));
     }
     wrap = outer;
+    /* Jumps and sprints are judged on quality and speed, not RPE (Phase 2 review). */
+    if (!(slot.distanceLog === 'jump' || (slot.timeLog === 'measured' && slot.loadType === 'none')))
     wrap.appendChild(ui.rpePicker({ value: draft.rpe, target: slot.rpeTarget,
       onChange: function (v) { AC.engine.setDraft('rpe', v, slot.id); } }));
     if (blk.kind === 'main' && slot.loadType === 'barbell' && !isRounds && (b.setIndex || 0) === 0 && draft.load > 0) {

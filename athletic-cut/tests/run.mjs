@@ -1832,8 +1832,9 @@ console.log('\nV2-11  phases: start Phase 1 or 2 at week 1, nothing lost');
     const main = w => { const b = R(0, w).find(b => b.id === 'p2a-main'); const it = b.items[0]; return [it.sets, it.repsTarget.min, it.rpeTarget, b.restSeconds]; };
     return { w1: main(1), w4: main(4), w11: main(11), w12: main(12),
       ham4: R(3, 4).find(b => b.id === 'p2d-ham').items[0].exerciseId, ham1: R(3, 1).find(b => b.id === 'p2d-ham').items[0].exerciseId,
-      c5: R(2, 5).find(b => b.id === 'p2c-speed').items.map(i => i.exerciseId),
-      c5in: R(2, 5, { speedMode: 'indoor' }).find(b => b.id === 'p2c-speed').items.map(i => i.exerciseId + ' ' + i.repsTarget.display),
+      c1: R(2, 1).map(b => b.id), c5: R(2, 5).map(b => b.id + ':' + b.items.map(i => i.exerciseId).join('+')), c12: R(2, 12).map(b => b.id),
+      c12acc: (b => [b.items[0].sets, b.items[0].benchmark, b.items[0].logMetric])(R(2, 12).find(b => b.id === 'p2c-acc')),
+      c5in: R(2, 5, { speedMode: 'indoor' }).filter(b => /p2c-(acc|fly)/.test(b.id)).map(b => b.mode + ' ' + b.items[0].exerciseId + ' ' + b.items[0].repsTarget.display),
       core8: R(2, 8).find(b => b.id === 'p2c-core').items[1].exerciseId, swings: JSON.stringify(p).includes('kettlebell-swing') };
   });
   eq('week 1 main lift: 3 x 4 @ RPE 6-7, 2-3 min', p2.w1, [3, 4, 7, 150]);
@@ -1841,8 +1842,11 @@ console.log('\nV2-11  phases: start Phase 1 or 2 at week 1, nothing lost');
   eq('week 11: 3 x 2, 3 min', p2.w11, [3, 2, 8, 180]);
   eq('week 12 benchmark: two triples', p2.w12, [2, 3, 8, 180]);
   eq('Nordic curl in week 1, slider curl in the light weeks', [p2.ham1, p2.ham4], ['nordic-curl', 'slider-curl']);
-  eq('flying runs start in week 5', p2.c5, ['lateral-bound', 'acceleration', 'flying-sprint', 'planned-cut']);
-  ok('indoors, flys become spin bike sprints and accelerations stop at 15 m', p2.c5in.some(x => /^spin-bike-sprint/.test(x)) && p2.c5in.some(x => /^acceleration 2 x 15 m/.test(x)), JSON.stringify(p2.c5in));
+  eq('week 1 Day C: warm-up, bounds, timed accelerations, braking, core (no flys yet)', p2.c1, ['p2c-prep', 'p2c-bound', 'p2c-acc', 'p2c-cut', 'p2c-core']);
+  eq('flying runs start in week 5', p2.c5.slice(1, 5), ['p2c-bound:lateral-bound', 'p2c-acc:acceleration', 'p2c-fly:flying-sprint', 'p2c-cut:planned-cut']);
+  eq('week 12 drops the bounds', p2.c12, ['p2c-prep', 'p2c-acc', 'p2c-cut', 'p2c-core']);
+  eq('week 12 accelerations are a timed 3 x 20 m benchmark', p2.c12acc, [3, true, 'time']);
+  eq('indoors, accelerations stop at 15 m and flys become bike sprint intervals', p2.c5in, ['straight-sets acceleration 2 x 15 m, about 90% (indoors)', 'interval spin-bike-sprint 2 x 20 s, heavy resistance']);
   eq('light weeks swap Copenhagen for a side plank', p2.core8, 'side-plank');
   ok('no swing EMOM in the required Phase 2 days', !p2.swings);
   // And back to Phase 1 any time.
@@ -1893,17 +1897,61 @@ console.log('\nV2-12  Day C indoor picker');
     const e = AC.store.get().activeSession.entries.slice(-1)[0]; return [e.exerciseId, e.load, e.seconds]; });
   eq('a push logs its load and time', logged, ['sled-push', 180, 17]);
   await page.evaluate(() => { AC.engine.abandon(); AC.engine.startPhase('phase-2', { weight: 195, waist: 31.5 }); AC.store.update(s => { s.schedule.programStartDate = AC.util.addDays(AC.util.todayKey(), -28); s.schedule.nextRequiredIndex = 2; });
-    AC.engine.start('day-c'); AC.engine.nextBlock(); AC.router.go('session'); AC.screens.render(); });
+    AC.engine.start('day-c'); while (AC.engine.currentBlock().id !== 'p2c-acc') AC.engine.nextBlock(); AC.router.go('session'); AC.screens.render(); });
   await page.waitForSelector('.variantpick');
   eq('Phase 2 offers outdoors, indoors with the bike, indoors with the sled', await page.locator('.variantpick [role=radio]').allInnerTexts(), ['Outdoors', 'Indoors · bike', 'Indoors · sled']);
   await page.getByRole('radio', { name: 'Indoors · bike' }).click();
-  const p2 = await page.evaluate(() => AC.engine.currentBlock().items.map(i => i.exerciseId));
-  eq('Phase 2 week 5 indoors: bounds, short accelerations, bike sprints, cuts', p2, ['lateral-bound', 'acceleration', 'spin-bike-sprint', 'planned-cut']);
+  ok('indoors the accelerations are 15 m', await page.evaluate(() => /2 x 15 m/.test(AC.engine.currentBlock().items[0].repsTarget.display)));
+  const fly = await page.evaluate(() => { const b = AC.store.get().activeSession.blocks.find(b => b.id === 'p2c-fly'); return [b.mode, b.items[0].exerciseId]; });
+  eq('and the flys are bike sprints', fly, ['interval', 'spin-bike-sprint']);
   await page.getByRole('radio', { name: 'Indoors · sled' }).click();
-  const p2s = await page.evaluate(() => AC.engine.currentBlock().items.map(i => i.exerciseId));
-  eq('with the sled, sled pushes replace the bike sprints (never both)', p2s, ['lateral-bound', 'acceleration', 'sled-push', 'planned-cut']);
-  const w1s = await page.evaluate(() => AC.seed.resolveBlocks(AC.store.get().program.days[2].blocks, 1, { speedMode: 'sled' }).find(b => b.id === 'p2c-speed').items.map(i => i.exerciseId));
-  ok('weeks without flying runs get no sled pushes either', !w1s.includes('sled-push') && !w1s.includes('spin-bike-sprint'), JSON.stringify(w1s));
+  const sl = await page.evaluate(() => { const b = AC.store.get().activeSession.blocks.find(b => b.id === 'p2c-fly'); return [b.mode, b.items[0].exerciseId, b.items[0].loadType, b.items[0].sets]; });
+  eq('with the sled, sled pushes replace the bike sprints (never both), 1:1', sl, ['straight-sets', 'sled-push', 'sled', 2]);
+  ok('never both in one session', await page.evaluate(() => !AC.store.get().activeSession.blocks.some(b => b.items.some(i => i.exerciseId === 'spin-bike-sprint'))));
+  const w1s = await page.evaluate(() => AC.seed.resolveBlocks(AC.store.get().program.days[2].blocks, 1, { speedMode: 'sled' }).map(b => b.id));
+  ok('weeks without flying runs get no sled or bike block', !w1s.includes('p2c-fly'), JSON.stringify(w1s));
+  await ctx.close();
+}
+
+/* ---------------------------------------------------------------- V2-15 */
+console.log('\nV2-15  Phase 2 logging: run times, sled, broad-jump distance, week 12 benchmarks');
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE);
+  await tap(page, /Begin week 1/i);
+  const runs = await page.evaluate(() => {
+    const U = AC.util, E = AC.engine;
+    E.startPhase('phase-2', { weight: 195, waist: 31.5 });
+    AC.store.update(s => { s.schedule.programStartDate = U.addDays(U.todayKey(), -28); s.settings.speedMode = 'outdoor'; });
+    E.start('day-c');
+    while (E.currentBlock().id !== 'p2c-acc') E.nextBlock();
+    E.setDraft('seconds', 3.3); E.logSet(); E.skipRest && E.skipRest();
+    E.setDraft('seconds', 3.2); E.logSet();
+    while (E.currentBlock().id !== 'p2c-fly') E.nextBlock();
+    E.setDraft('seconds', 1.2); E.logSet();
+    return AC.store.get().activeSession.entries.map(e => [e.exerciseId, e.seconds, e.distanceM === undefined ? null : e.distanceM]);
+  });
+  eq('each acceleration and fly logs its time', runs.map(r => r.slice(0, 2)), [['acceleration', 3.3], ['acceleration', 3.2], ['flying-sprint', 1.2]]);
+  await page.evaluate(() => { const E = AC.engine; E.abandon(); E.start('day-a'); while (E.currentBlock().id !== 'p2a-jump') E.nextBlock(); AC.router.go('session'); AC.screens.render(); });
+  const jumpUi = await page.evaluate(() => [[...document.querySelectorAll('.herocard .cap')].map(c => c.textContent), !!document.querySelector('.rpe, [aria-label*="RPE"]')]);
+  ok('broad jumps ask for the best jump of each set in metres, with no RPE', jumpUi[0].some(t => /^Best jump this set · m/.test(t)) && !jumpUi[1], JSON.stringify(jumpUi));
+  const jump = await page.evaluate(() => { const E = AC.engine; E.setDraft('distanceM', 2.35); E.logSet(); const e = AC.store.get().activeSession.entries.slice(-1)[0]; return [e.exerciseId, e.distanceM]; });
+  eq('a broad-jump set logs its distance', jump, ['broad-jump', 2.35]);
+  const bench = await page.evaluate(() => {
+    const U = AC.util, E = AC.engine;
+    E.complete ? null : null;
+    E.abandon();
+    AC.store.update(s => { s.schedule.programStartDate = U.addDays(U.todayKey(), -77); });
+    E.start('day-a'); while (E.currentBlock().id !== 'p2a-jump') E.nextBlock();
+    const pre = E.currentBlock().items[0].repsTarget.display;
+    E.setDraft('distanceM', 2.41); E.logSet();
+    E.abandon(); E.start('day-c'); while (E.currentBlock().id !== 'p2c-acc') E.nextBlock();
+    E.setDraft('seconds', 3.15); E.logSet();
+    const all = AC.store.get().sessions.flatMap(s => s.entries).concat(AC.store.get().activeSession.entries);
+    return [pre, all.filter(e => e.benchmark).map(e => [e.exerciseId, e.distanceM || e.seconds])];
+  });
+  ok('week 12 jumps are the benchmark, starting from the last jump logged', /benchmark/.test(bench[0]), bench[0]);
+  eq('week 12 benchmark entries are flagged: jump distance and 20 m time', bench[1], [['broad-jump', 2.41], ['acceleration', 3.15]]);
   await ctx.close();
 }
 
