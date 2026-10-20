@@ -5,7 +5,7 @@ Each app lives in its own folder (Athletic Cut has its own repository; `athletic
 | App | Folder | Live link |
 | --- | --- | --- |
 | Retro Cam | [`retro-cam/`](retro-cam/) | https://skigoogs-star.github.io/TESTES/retro-cam/ |
-| Athletic Cut | moved to [skigoogs-star/athletic-cut](https://github.com/skigoogs-star/athletic-cut) | https://skigoogs-star.github.io/athletic-cut/ |
+| Athletic Cut | moved to [skigoogs-star/Athletic-Cut](https://github.com/skigoogs-star/Athletic-Cut) | https://skigoogs-star.github.io/Athletic-Cut/ |
 | Aloud | [`aloud/`](aloud/) | https://skigoogs-star.github.io/TESTES/aloud/ |
 | DeckRec (Android) | [`deckrec-android/`](deckrec-android/) | APK download: https://github.com/skigoogs-star/TESTES/releases/tag/latest |
 
